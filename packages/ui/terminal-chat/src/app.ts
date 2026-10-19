@@ -10,6 +10,12 @@ import { Box, Static, Text, useStdin } from 'ink'
 import { splitKeys } from './keys.ts'
 import { menuFor, type ChatState, type ChatStore, type HistoryItem } from './store.ts'
 
+/**
+ * The accent colour: the top of Harness Studio's logo gradient. Terminals without 24-bit colour show the nearest
+ * colour they have.
+ */
+export const ACCENT = '#3b82f6'
+
 /** The spinner's frames, drawn about ten times a second while a reply runs. */
 export const SPINNER = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢']
 
@@ -29,8 +35,8 @@ export function lastLine(text: string, width = 80): string {
 function Item({ item }: { item: HistoryItem }): ReactElement {
   switch (item.kind) {
     case 'welcome':
-      return h(Box, { borderStyle: 'round', borderColor: 'cyan', paddingX: 1, flexDirection: 'column' },
-        h(Text, null, h(Text, { color: 'cyan' }, '✻ '), h(Text, { bold: true }, 'Harness Studio')),
+      return h(Box, { borderStyle: 'round', borderColor: ACCENT, paddingX: 1, flexDirection: 'column' },
+        h(Text, null, h(Text, { color: ACCENT }, '✻ '), h(Text, { bold: true }, 'Harness Studio')),
         h(Text, { dimColor: true }, `${item.model} · ${item.cwd}`),
         h(Text, { dimColor: true }, '/ for commands · Esc stops a reply · Ctrl-C twice quits'))
     case 'message':
@@ -59,7 +65,7 @@ function Spinner({ since, reasoning }: { since: number; reasoning: string }): Re
   const frame = SPINNER[Math.floor(now / 100) % SPINNER.length] ?? '✻'
   const thought = lastLine(reasoning)
   return h(Box, { marginTop: 1, flexDirection: 'column' },
-    h(Text, null, h(Text, { color: 'cyan' }, `${frame} `), h(Text, null, reasoning === '' ? 'Working… ' : 'Thinking… '),
+    h(Text, null, h(Text, { color: ACCENT }, `${frame} `), h(Text, null, reasoning === '' ? 'Working… ' : 'Thinking… '),
       h(Text, { dimColor: true }, `${elapsed(now - since)} · Esc to stop`)),
     thought === '' ? null : h(Text, { dimColor: true, wrap: 'truncate-end' }, `  ${thought}`))
 }
@@ -80,7 +86,7 @@ function ChoiceBox({ choice }: { choice: NonNullable<ChatState['choice']> }): Re
       h(Text, { bold: true }, choice.title),
       choice.detail === undefined ? null : h(Text, { dimColor: true }, choice.detail),
       h(Box, { flexDirection: 'column', marginTop: 1 },
-        ...choice.options.map((option, index) => h(Text, { key: option.value, ...index === choice.selected ? { color: 'cyan' } : {} },
+        ...choice.options.map((option, index) => h(Text, { key: option.value, ...index === choice.selected ? { color: ACCENT } : {} },
           `${index === choice.selected ? '❯' : ' '} ${String(index + 1)}. ${option.label}`)))),
     h(Box, { paddingX: 2 }, h(Text, { dimColor: true }, '↑↓ to choose · Enter to confirm · Esc to say no')))
 }
@@ -93,7 +99,7 @@ function Menu({ entries, selected }: { entries: ReturnType<typeof menuFor>; sele
     ...entries.map((entry, index) => {
       const label = `/${entry.name}${index === active && entry.input !== undefined ? ` ${entry.input.hint}` : ''}`
       return h(Text, { key: entry.name, wrap: 'truncate-end' },
-        h(Text, index === active ? { color: 'cyan' } : {}, `${index === active ? '❯ ' : '  '}${label.padEnd(width + 1)}`),
+        h(Text, index === active ? { color: ACCENT } : {}, `${index === active ? '❯ ' : '  '}${label.padEnd(width + 1)}`),
         h(Text, { dimColor: true }, ` ${entry.description}`))
     }))
 }
