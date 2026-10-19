@@ -6,6 +6,7 @@ import { isAppendSurfaceEvent, isReplacementSurfaceEvent } from '@deepseek-ai/ds
 import type { InboxState } from './inbox.ts'
 import { chatNode, contextLocation } from './common.ts'
 import { contextForm, contextProducer } from './event-projection.ts'
+import { isCutInstructionsContext } from '../contract/chat-visibility.ts'
 
 interface ReferencedUserMessageNode extends UserMessageNode {
   /** Labels cited by the immediately following session-reference context. */
@@ -120,12 +121,15 @@ export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
     const location = contextLocation(context)
     const human = context.state.kind === 'user' || context.state.kind === 'steering'
     const opensExchange = human && location.kind === 'step' && location.step.step === 1
+    // Cut workspace instructions stay beside the input rather than inside the
+    // collapsed work details, so the user sees the cut without expanding.
+    const cutInstructions = context.state.kind === 'context' && isCutInstructionsContext(context.state)
     return chatNode(
       context,
       waking ? 'turn-trigger' : context.state.kind,
       context.state.seq,
       context.state,
-      { location, groupTree: opensExchange ? 'exchange' : (human || waking) ? 'input' : undefined },
+      { location, groupTree: opensExchange ? 'exchange' : (human || waking || cutInstructions) ? 'input' : undefined },
     )
   },
 }

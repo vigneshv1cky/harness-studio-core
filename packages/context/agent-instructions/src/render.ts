@@ -5,12 +5,7 @@
  */
 
 import { basename, dirname, sep } from 'node:path'
-import {
-  AGENTS_HOME_ENV,
-  DEFAULT_AGENTS_HOME_DISPLAY,
-  DEFAULT_DSH_HOME_DISPLAY,
-  DSH_HOME_ENV,
-} from '@deepseek-ai/dsh-home-paths'
+import { DEFAULT_DSH_HOME_DISPLAY, DSH_HOME_ENV } from '@deepseek-ai/dsh-home-paths'
 import type { InstructionFile, LoadedInstructionFile } from './files.ts'
 
 const SYSTEM_REMINDER_OPEN = '<system-reminder>'
@@ -61,6 +56,8 @@ export interface AgentInstructionChange {
 export interface ChangeRenderItem {
   change: AgentInstructionChange
   file: LoadedInstructionFile
+  /** For a replacement: the text the model was last given for this file, so the change can be sent as an edit. */
+  previousContent?: string
 }
 
 interface RenderStyle {
@@ -96,22 +93,18 @@ function sectionText(file: LoadedInstructionFile): string {
 export const USER_GLOBAL_DIRECTORY = 'user-global'
 
 /**
- * Directory component that identifies the shared agents-root user-global scope.
- *
- * It is a distinct scope so the harness-home file keeps the scope key that
- * earlier sessions recorded, while {@link instructionCandidateGroup} still
- * deduplicates the two roots as one candidate group.
+ * Directory component of the shared agents-root (`~/.agents`) scope that earlier sessions recorded.
+ * Harness Studio no longer reads that root; the name stays reserved so such a recorded scope still decodes
+ * as user-global and a project folder of that name keeps its own scope.
  */
 export const AGENTS_GLOBAL_DIRECTORY = 'agents-global'
 
 /**
- * Ordered user-global scope directories.
- *
- * Discovery, baseline reconciliation, and deduplication all iterate this order,
- * so the harness home stays the candidate that decides content duplicates
- * against the shared agents root.
+ * Ordered user-global scope directories: the harness home only. Harness Studio reads its own instruction
+ * files (the harness home's `AGENTS.md`, then each project folder's `AGENTS.md` and `AGENTS.local.md`), not the
+ * shared `~/.agents/AGENTS.md`.
  */
-export const USER_GLOBAL_DIRECTORIES = [USER_GLOBAL_DIRECTORY, AGENTS_GLOBAL_DIRECTORY] as const
+export const USER_GLOBAL_DIRECTORIES = [USER_GLOBAL_DIRECTORY] as const
 
 /**
  * File name of the user-global instruction file under each user-global root.
@@ -124,13 +117,11 @@ export const USER_GLOBAL_FILE = 'AGENTS.md'
 /**
  * Derive the logical instruction scope from a model-facing path.
  * @param displayPath - project-relative or user-global instruction path.
- * @returns `user-global`, `agents-global`, `.`, or the containing project-relative directory.
+ * @returns `user-global`, `.`, or the containing project-relative directory.
  */
 export function scopeForDisplayPath(displayPath: string): string {
   if (displayPath === `${DEFAULT_DSH_HOME_DISPLAY}/${USER_GLOBAL_FILE}`
     || displayPath === `$${DSH_HOME_ENV}/${USER_GLOBAL_FILE}`) return USER_GLOBAL_DIRECTORY
-  if (displayPath === `${DEFAULT_AGENTS_HOME_DISPLAY}/${USER_GLOBAL_FILE}`
-    || displayPath === `$${AGENTS_HOME_ENV}/${USER_GLOBAL_FILE}`) return AGENTS_GLOBAL_DIRECTORY
   return dirname(displayPath)
 }
 
@@ -158,7 +149,7 @@ export function instructionCandidateGroup(directory: string): string {
 }
 
 /** Directory names that {@link scopeForDisplayPath} reads as a user-global scope, not a project path. */
-const RESERVED_SCOPE_DIRECTORIES: ReadonlySet<string> = new Set(USER_GLOBAL_DIRECTORIES)
+const RESERVED_SCOPE_DIRECTORIES: ReadonlySet<string> = new Set([USER_GLOBAL_DIRECTORY, AGENTS_GLOBAL_DIRECTORY])
 
 /**
  * Keep a project-relative path out of the user-global scope namespace.
@@ -183,7 +174,7 @@ const SCOPE_SEPARATOR = '\u0000'
  * Each loaded candidate is tracked independently, so the key pairs the logical
  * directory with the exact candidate file name behind a NUL separator that no
  * directory path or file name can contain. Distinct candidates in one directory
- * (`AGENTS.md` vs `CLAUDE.md`, a base file vs its `.local` overlay) therefore
+ * (a base file vs its `.local` overlay) therefore
  * never collide in the scope-keyed state maps.
  * @param directory - `user-global`, `agents-global`, `.`, or a project-relative directory.
  * @param candidateName - instruction file name within that directory.
@@ -245,8 +236,47 @@ function baselineRenderStyle(files: LoadedInstructionFile[], replacePreviousBase
   }
 }
 
+/**
+ * The changed block between two versions of a file: the lines before the first difference and after the last
+ * one are shared, everything between them was removed and replaced.
+ */
+function lineEdit(before: string, after: string): { line: number; removed: string[]; added: string[] } {
+  const a = before.split('\n')
+  const b = after.split('\n')
+  let head = 0
+  while (head < a.length && head < b.length && a[head] === b[head]) head += 1
+  let tail = 0
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail += 1
+  return { line: head + 1, removed: a.slice(head, a.length - tail), added: b.slice(head, b.length - tail) }
+}
+
+/**
+ * Describe a replacement as an edit when that is much shorter than the whole file: a small change to a large
+ * instruction file should not send the file again.
+ * @returns the edit text, or undefined when the whole file is the better message.
+ */
+function editSectionText(path: string, before: string, after: string): string | undefined {
+  const edit = lineEdit(before, after)
+  const changed = [...edit.removed, ...edit.added].join('\n')
+  if (byteLength(changed) * 2 > byteLength(after) || byteLength(after) < 2048) return undefined
+  const span = edit.removed.length === 0
+    ? `insert ${edit.added.length} line(s) before line ${edit.line}`
+    : `replace ${edit.removed.length} line(s) starting at line ${edit.line}${edit.added.length === 0 ? ' with nothing' : ` with ${edit.added.length} line(s)`}`
+  return [
+    `Updated instructions from: ${path}`,
+    '',
+    `This file changed after it was loaded. Apply this edit to the previously loaded instructions from this file: ${span}. The rest of the file is unchanged.`,
+    ...edit.removed.length === 0 ? [] : ['', 'Removed lines:', '', edit.removed.join('\n')],
+    ...edit.added.length === 0 ? [] : ['', 'Added lines:', '', edit.added.join('\n')],
+  ].join('\n')
+}
+
 function changedSectionText(item: ChangeRenderItem): string {
   const { change, file } = item
+  if (change.action === 'replace' && item.previousContent !== undefined) {
+    const edit = editSectionText(change.path, item.previousContent, file.content)
+    if (edit !== undefined) return edit
+  }
   if (change.action === 'set') return additionalSectionText(file)
   if (change.action === 'remove') {
     return `Instructions removed: ${change.path}\n\nThe previously loaded instructions from this file no longer apply.`

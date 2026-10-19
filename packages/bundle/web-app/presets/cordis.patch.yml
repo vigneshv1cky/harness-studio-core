@@ -18,7 +18,7 @@
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:
-              maxBytes: 65536
+              maxBytes: 131072
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash

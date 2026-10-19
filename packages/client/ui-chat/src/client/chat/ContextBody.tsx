@@ -269,6 +269,51 @@ export function InstructionsBody({ content, source, t }: {
   )
 }
 
+/** Budget marker the instructions producer writes at the top of a cut baseline. */
+const BUDGET_MARKER = /Workspace instruction budget \d+ bytes: ([^\n]+)/
+const TRUNCATED_ENTRY = /^(.+) from (\d+) to (\d+) bytes$/
+
+function kilobytes(bytes: number): string {
+  return String(Math.max(1, Math.round(bytes / 1024)))
+}
+
+/**
+ * Collapsed-row account of instruction files the byte budget left out or cut,
+ * read from the marker the producer writes into the model-facing text, so the
+ * user sees a cut without expanding the row.
+ * @param content - Durable model-facing content of the instructions context.
+ * @param t - Locale seat.
+ * @returns One line naming each omitted or truncated file, or null when nothing was cut.
+ */
+export function instructionBudgetSummary(content: ContextMessageNode['content'], t: Translate): string | null {
+  const text = content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+  const marker = BUDGET_MARKER.exec(text)?.[1]
+  if (marker === undefined) return null
+  const parts: string[] = []
+  const cuts: { included: string; original: string }[] = []
+  for (const part of marker.split('; ')) {
+    if (part.startsWith('omitted ')) {
+      parts.push(t('message.context.instructions.omitted', { paths: part.slice('omitted '.length) }))
+      continue
+    }
+    if (!part.startsWith('truncated ')) continue
+    for (const entry of part.slice('truncated '.length).split(', ')) {
+      const match = TRUNCATED_ENTRY.exec(entry)
+      if (match === null) continue
+      const [, path = '', original = '0', included = '0'] = match
+      const cut = { included: kilobytes(Number(included)), original: kilobytes(Number(original)) }
+      cuts.push(cut)
+      parts.push(t('message.context.instructions.truncated', { path, ...cut }))
+    }
+  }
+  if (parts.length === 1 && cuts.length === 1 && !marker.includes('omitted ')) {
+    const [only] = cuts
+    /* v8 ignore next -- a single part comes from a single parsed cut. */
+    if (only !== undefined) return t('message.context.instructions.cut', { included: only.included, original: only.original })
+  }
+  return parts.length === 0 ? null : parts.join(' · ')
+}
+
 /** One catalog entry, as the durable source records it. */
 interface CatalogEntry {
   name: string
@@ -542,8 +587,9 @@ function noticeSummary(source: unknown): string | null {
  * Returns the form the body actually rendered as, which is not always the
  * declared one: a declared form whose fields are unreadable falls back to
  * opaque, and the caller labels the row with what it really shows.
- * `summary` is the collapsed row's one-line account, which only a `notice`
- * records: its whole point is being readable without expanding.
+ * `summary` is the collapsed row's one-line account, recorded by a `notice` and
+ * by instructions that the byte budget cut: its whole point is being readable
+ * without expanding.
  * @param form - the producer-declared form projected onto the node.
  * @param props - durable content, its source, and the locale seat.
  * @returns the rendered form (null for opaque), its collapsed summary, and its body.
@@ -557,7 +603,7 @@ export function contextBody(
     case 'instructions':
       return instructionChanges(props.source) === null
         ? opaque
-        : { rendered: 'instructions', summary: null, body: <InstructionsBody {...props} /> }
+        : { rendered: 'instructions', summary: instructionBudgetSummary(props.content, props.t), body: <InstructionsBody {...props} /> }
     case 'catalog':
       return catalogEntries(props.source) === null
         ? opaque

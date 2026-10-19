@@ -5,15 +5,15 @@
  */
 
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { realpath, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { FileSystem, FsInfo, FsTarget, FsVersion } from '@deepseek-ai/dsh-fs'
-import { agentsHomeDisplay, dshHomeDisplay } from '@deepseek-ai/dsh-home-paths'
+import { dshHomeDisplay } from '@deepseek-ai/dsh-home-paths'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import { resolveConfig, resolveDiscoveryConfig, type ResolvedConfig, type ResolvedDiscoveryConfig } from './config.ts'
-import { trimmedInstructionDigest } from './digest.ts'
+import { instructionDuplicateKey } from './digest.ts'
 import {
-  AGENTS_GLOBAL_DIRECTORY,
   decodeScopeKey,
   escapeProjectDisplayPath,
   instructionCandidateGroup,
@@ -92,8 +92,6 @@ function userGlobalRoots(config: ResolvedDiscoveryConfig): UserGlobalRoot[] {
     switch (directory) {
       case USER_GLOBAL_DIRECTORY:
         return { directory, home: config.dshHome, display: dshHomeDisplay(config.dshHome) }
-      case AGENTS_GLOBAL_DIRECTORY:
-        return { directory, home: config.agentsHome, display: agentsHomeDisplay(config.agentsHome) }
       /* v8 ignore next -- USER_GLOBAL_DIRECTORIES is closed; this arm only makes adding a label a compile error. */
       default:
         return assertNever(directory, 'user-global directory')
@@ -417,6 +415,237 @@ async function readBounded(
 }
 
 /**
+ * Import depth limit for `@path` references, matching Claude Code's CLAUDE.md
+ * import rule so files written for it expand the same way here.
+ */
+const MAX_IMPORT_DEPTH = 5
+
+/**
+ * An `@path` import token: at line start or after whitespace or `(`, naming a
+ * home-relative (`~/`), absolute, `./` or `../` path, or a relative path whose
+ * last segment has an extension. The leading-character rule keeps e-mail
+ * addresses and `name@version` specifiers out.
+ */
+const IMPORT_TOKEN = /(^|[\s(])@((?:~\/|\.{1,2}\/|\/)[^\s)`'"<>]+|[\w.-]+(?:\/[^\s)`'"<>]+)*\.[A-Za-z0-9]+)/g
+
+const FENCE = /^\s{0,3}(```|~~~)/
+
+/**
+ * Instruction file names discovery loads on its own, so an import of one would load it twice. CLAUDE.md is
+ * not discovered, so an explicit `@CLAUDE.md` import expands like any other file.
+ */
+const INSTRUCTION_FILE_NAME = /^AGENTS(?:\.local)?\.md$/i
+
+/** Most files one load may read for `@path` imports, across every instruction file it expands. */
+export const MAX_IMPORT_READS = 200
+
+/**
+ * Shared count of import reads for one load. Pass the same object to every
+ * {@link expandInstructionImports} call of a load so the cap covers the whole load.
+ */
+export interface ImportReadCounter {
+  reads: number
+}
+
+interface ImportScope {
+  /** Project root that imported files must stay inside; undefined allows any readable file. */
+  root: string | undefined
+  /** The project root with symlinks resolved, checked against each import's real path. */
+  realRoot: string | undefined
+  /** Directory used to display imported paths relative to, when inside it. */
+  displayRoot: string | undefined
+  maxSourceBytes: number
+  fileSystem: FileSystem | undefined
+  signal: AbortSignal | undefined
+  /** Reads so far in this load, capped at {@link MAX_IMPORT_READS}. */
+  counter: ImportReadCounter
+  /** Real paths already imported while expanding this file: each is read and shown once. */
+  seen: Set<string>
+  /** UTF-8 bytes of the expansion so far: the file plus every import and label added. */
+  bytes: number
+  /** Set once the byte budget or read cap is reached; nothing more is read. */
+  stopped: boolean
+}
+
+function isInside(root: string, path: string): boolean {
+  const rel = relative(root, path)
+  return rel.length === 0 || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+async function realOrSelf(path: string): Promise<string> {
+  try {
+    return await realpath(path)
+  } catch {
+    // The path is not on this host (a remote provider) or is missing; the
+    // provider read below decides whether it exists.
+    return path
+  }
+}
+
+function importDisplay(path: string, scope: ImportScope): string {
+  if (scope.displayRoot !== undefined && isInside(scope.displayRoot, path)) return relative(scope.displayRoot, path) || '.'
+  const home = homedir()
+  return path === home || path.startsWith(home + sep) ? `~${path.slice(home.length)}` : path
+}
+
+/**
+ * Whether discovery loads `target` anyway: an instruction file in the importing file's own folder or
+ * a folder above it (within the project root for project files). Importing it would repeat its text,
+ * as in an `AGENTS.local.md` that only says `@AGENTS.md`.
+ */
+function loadedByDiscovery(target: string, importer: string, scope: ImportScope): boolean {
+  if (!INSTRUCTION_FILE_NAME.test(basename(target))) return false
+  const folder = dirname(target)
+  const from = dirname(importer)
+  if (!isInside(folder, from)) return false
+  return scope.root === undefined ? folder === from : isInside(scope.root, folder)
+}
+
+function maskInlineCode(line: string): string {
+  return line.replace(/`[^`]*`/g, match => ' '.repeat(match.length))
+}
+
+/**
+ * Read one import within what is left of the byte budget, counting the read. A file larger than the budget
+ * left, or a read past the cap, stops the whole expansion: nothing after it is read.
+ */
+async function readImport(path: string, scope: ImportScope): Promise<string | undefined> {
+  if (scope.counter.reads >= MAX_IMPORT_READS) {
+    scope.stopped = true
+    return undefined
+  }
+  // Probes count too, so references to missing files cannot be repeated without limit.
+  scope.counter.reads += 1
+  const probe = await statFile(path, scope.fileSystem, scope.signal)
+  if (probe.kind !== 'present') return undefined
+  const left = scope.maxSourceBytes - scope.bytes
+  if (probe.info.size !== undefined && probe.info.size > left) {
+    scope.stopped = true
+    return undefined
+  }
+  const content = await readBounded({ absolutePath: path, ...probe.info }, left, scope.fileSystem, scope.signal)
+  if (content === undefined && probe.info.size === undefined) scope.stopped = true
+  return content
+}
+
+async function expandWithin(
+  content: string,
+  absolutePath: string,
+  scope: ImportScope,
+  depth: number,
+): Promise<string> {
+  if (depth > MAX_IMPORT_DEPTH) return content
+  const lines = content.split('\n')
+  const out: string[] = []
+  let inFence = false
+  for (const line of lines) {
+    out.push(line)
+    if (scope.stopped) continue
+    if (FENCE.test(line)) {
+      inFence = !inFence
+      continue
+    }
+    if (inFence || !line.includes('@')) continue
+    for (const match of maskInlineCode(line).matchAll(IMPORT_TOKEN)) {
+      if (scope.stopped) break
+      const reference = match[2]
+      /* v8 ignore next -- the second group always participates in a match. */
+      if (reference === undefined) continue
+      const target = reference.startsWith('~/')
+        ? join(homedir(), reference.slice(2))
+        : resolve(dirname(absolutePath), reference)
+      if (loadedByDiscovery(target, absolutePath, scope)) continue
+      const real = await realOrSelf(target)
+      if (scope.root !== undefined && scope.realRoot !== undefined
+        && (!isInside(scope.root, target) || !isInside(scope.realRoot, real))) continue
+      // A cycle, or a file this expansion already shows: repeating it would only multiply reads and text.
+      if (scope.seen.has(real)) continue
+      scope.seen.add(real)
+      const imported = await readImport(target, scope)
+      if (imported === undefined) continue
+      const label = `\nImported from ${importDisplay(target, scope)}:\n\n`
+      scope.bytes += Buffer.byteLength(imported, 'utf8') + Buffer.byteLength(label, 'utf8') + 2
+      if (scope.bytes > scope.maxSourceBytes) {
+        scope.stopped = true
+        break
+      }
+      const expanded = await expandWithin(imported, target, scope, depth + 1)
+      out.push('', `Imported from ${importDisplay(target, scope)}:`, '', expanded.trimEnd(), '')
+    }
+  }
+  return out.join('\n')
+}
+
+/**
+ * The real user-global instruction file: `AGENTS.md` in the harness home. Only it may import files outside a
+ * project, so a project file whose displayed path merely looks global (a folder named `~` or `$DSH_HOME`
+ * inside the repository) gets project rules.
+ * @param homes - the resolved harness home.
+ * @returns its absolute instruction-file path.
+ */
+export function userGlobalInstructionFiles(homes: { dshHome: string }): string[] {
+  return [resolve(join(homes.dshHome, USER_GLOBAL_FILE))]
+}
+
+/** Options for {@link expandInstructionImports}. */
+export interface InstructionImportOptions {
+  /** Root that bounds imports from project files. */
+  projectRoot: string
+  /** Absolute paths of the real user-global instruction files ({@link userGlobalInstructionFiles}); any other file is a project file. */
+  globalFiles: readonly string[]
+  /** Per-file source cap, applied to the file and its imports together, while they are read. */
+  maxSourceBytes: number
+  /** Optional provider used instead of host filesystem reads. */
+  fileSystem?: FileSystem
+  /** Cancellation for probes and reads. */
+  signal?: AbortSignal
+  /** Read count shared across one load; a fresh one caps this file alone. */
+  counter?: ImportReadCounter
+}
+
+/**
+ * Expand Claude Code-style `@path` imports in an instruction file. Each import
+ * keeps its reference line and adds the imported file's content after it,
+ * labelled with its path; nested imports expand up to {@link MAX_IMPORT_DEPTH}
+ * levels, and a file already imported in this expansion (a cycle, or the same
+ * file named twice) is not read or shown again. References inside fenced or
+ * inline code are left alone, and unreadable, missing, or disallowed files leave
+ * the reference unchanged. A project instruction file may only import files
+ * inside its project root (checked on the real path, so a symlink cannot
+ * escape); the user-global files, recognized by their absolute path rather than
+ * by how it is displayed, may import any readable file, because the user wrote
+ * them. The per-file source cap is enforced while reading, so expansion stops
+ * before the first import that would exceed it, and one load reads at most
+ * {@link MAX_IMPORT_READS} imported files.
+ * @param file - the loaded instruction file.
+ * @param options - project root, global files, byte cap, provider, cancellation and shared read count.
+ * @returns the file with its imports expanded.
+ */
+export async function expandInstructionImports(
+  file: LoadedInstructionFile,
+  options: InstructionImportOptions,
+): Promise<LoadedInstructionFile> {
+  if (!file.content.includes('@')) return file
+  const global = options.globalFiles.some(path => resolve(path) === resolve(file.absolutePath))
+  const root = global ? undefined : resolve(options.projectRoot)
+  const realRoot = root === undefined ? undefined : await realOrSelf(root)
+  const scope: ImportScope = {
+    root,
+    realRoot,
+    displayRoot: root,
+    maxSourceBytes: options.maxSourceBytes,
+    fileSystem: options.fileSystem,
+    signal: options.signal,
+    counter: options.counter ?? { reads: 0 },
+    seen: new Set([await realOrSelf(file.absolutePath)]),
+    bytes: Buffer.byteLength(file.content, 'utf8'),
+    stopped: false,
+  }
+  const content = await expandWithin(file.content, file.absolutePath, scope, 1)
+  return content === file.content ? file : { ...file, content }
+}
+
+/**
  * Drop later candidates whose trimmed content duplicates an earlier candidate in
  * the same candidate group. Different groups never collapse even when identical;
  * within one group the earliest candidate in discovery order is kept and its
@@ -437,7 +666,7 @@ export function dedupInstructionFilesByCandidateGroup(files: LoadedInstructionFi
       digests = new Set()
       keptDigestsByGroup.set(group, digests)
     }
-    const digest = trimmedInstructionDigest(file.content)
+    const digest = instructionDuplicateKey(file.displayPath, file.content)
     if (digests.has(digest)) continue
     digests.add(digest)
     kept.push(file)
@@ -474,16 +703,27 @@ export async function loadBaselineInstructionSet(
   if (config.maxBytes <= 0 || !Number.isFinite(config.maxBytes)) return undefined
   if (config.maxSourceBytes <= 0 || !Number.isFinite(config.maxSourceBytes)) return undefined
   const discovered = await discoverInstructionFiles(options, fileSystem)
+  const importRoot = options.projectRoot
+    ?? await findProjectRoot(resolve(options.cwd), config.projectRootMarkers, fileSystem, options.signal)
+  const imports: InstructionImportOptions = {
+    projectRoot: importRoot,
+    // The same homes discovery used, so the files it found as user-global are the ones recognized here.
+    globalFiles: userGlobalInstructionFiles(resolveDiscoveryConfig(options)),
+    maxSourceBytes: config.maxSourceBytes,
+    ...fileSystem === undefined ? {} : { fileSystem },
+    ...options.signal === undefined ? {} : { signal: options.signal },
+    counter: { reads: 0 },
+  }
   const loaded: LoadedInstructionFile[] = []
   for (const file of discovered) {
     const content = await readBounded(file, config.maxSourceBytes, fileSystem, options.signal)
     if (content !== undefined) {
-      loaded.push({
+      loaded.push(await expandInstructionImports({
         absolutePath: file.absolutePath,
         displayPath: file.displayPath,
         content,
         ...file.version === undefined ? {} : { version: file.version },
-      })
+      }, imports))
     }
   }
   const kept = dedupInstructionFilesByCandidateGroup(loaded)
@@ -583,6 +823,7 @@ export async function probeScopeInstruction(
  * @param maxSourceBytes - maximum UTF-8 bytes accepted from the source.
  * @param fileSystem - provider used for the streaming read.
  * @param signal - cancellation for provider streaming.
+ * @param imports - project root and global files that bound `@path` imports; omitted reads the file without expanding imports.
  * @returns loaded content with the probed version, or undefined when unavailable.
  */
 export async function readScopeInstruction(
@@ -590,13 +831,20 @@ export async function readScopeInstruction(
   maxSourceBytes: number,
   fileSystem: FileSystem,
   signal?: AbortSignal,
+  imports?: { projectRoot: string; globalFiles: readonly string[] },
 ): Promise<LoadedInstructionFile | undefined> {
   const content = await readBounded(file, maxSourceBytes, fileSystem, signal)
   if (content === undefined) return undefined
-  return {
+  const loaded = {
     absolutePath: file.absolutePath,
     displayPath: file.displayPath,
     content,
     version: file.version,
   }
+  return imports === undefined ? loaded : expandInstructionImports(loaded, {
+    ...imports,
+    maxSourceBytes,
+    fileSystem,
+    ...signal === undefined ? {} : { signal },
+  })
 }

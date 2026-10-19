@@ -10,7 +10,7 @@ import type { Message } from '@deepseek-ai/dsh-llm'
 import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 import type { FileSystem, FsVersion } from '@deepseek-ai/dsh-fs'
 import type { ResolvedConfig } from './config.ts'
-import { instructionContentSha1, trimmedInstructionDigest } from './digest.ts'
+import { instructionContentSha1, instructionDuplicateKey } from './digest.ts'
 import {
   ancestorChain,
   descendantDirsBetween,
@@ -19,6 +19,7 @@ import {
   readScopeInstruction,
   relativeDisplay,
   scopeInstructionFile,
+  userGlobalInstructionFiles,
   type LoadedInstructionFile,
 } from './files.ts'
 import {
@@ -54,11 +55,16 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
-/** Per-scope metadata cache; instruction prose is deliberately not retained. */
+/** Per-scope metadata cache, plus the text last sent for the scope in this process. */
 export interface InstructionVersionState {
   path: string
   version: FsVersion
   digest: string
+  /**
+   * The content last sent to the model for this scope, kept in memory only so a later change can be sent
+   * as an edit instead of the whole file. Absent after a resume, when the whole file is sent again.
+   */
+  content?: string
   /**
    * Trimmed-content identity ({@link trimmedInstructionDigest}) used to suppress
    * candidate-group duplicates on the metadata fast path without re-reading a sibling.
@@ -185,7 +191,8 @@ export function baselineInstructionState(files: LoadedInstructionFile[]): {
         path: file.displayPath,
         version: file.version,
         digest,
-        trimmedDigest: trimmedInstructionDigest(file.content),
+        trimmedDigest: instructionDuplicateKey(file.displayPath, file.content),
+        content: file.content,
       })
     }
   }
@@ -404,18 +411,19 @@ export async function reconcileInstructionContext(
           && hasKeptTrimmed(group, cached.trimmedDigest)) continue
       }
 
-      const file = await readScopeInstruction(probedFile, resolved.maxSourceBytes, fileSystem, options.signal)
+      const file = await readScopeInstruction(probedFile, resolved.maxSourceBytes, fileSystem, options.signal, { projectRoot, globalFiles: userGlobalInstructionFiles(resolved) })
       if (file === undefined) {
         rollbackGroup()
         break
       }
       const currentDigest = instructionContentSha1(file.content)
-      const trimmedDigest = trimmedInstructionDigest(file.content)
+      const trimmedDigest = instructionDuplicateKey(file.displayPath, file.content)
       const nextVersion: InstructionVersionState = {
         path: file.displayPath,
         version: probedFile.version,
         digest: currentDigest,
         trimmedDigest,
+        content: file.content,
       }
       if (registerKeptTrimmed(group, trimmedDigest)) {
         // A distinct file whose trimmed content already appeared earlier in this
@@ -439,7 +447,8 @@ export async function reconcileInstructionContext(
         path: file.displayPath,
         digest: currentDigest,
       }
-      items.push({ change, file })
+      const previousContent = action === 'replace' && cached?.path === file.displayPath ? cached.content : undefined
+      items.push({ change, file, ...previousContent === undefined ? {} : { previousContent } })
       versionUpdates.push({ change, state: nextVersion })
     }
   }

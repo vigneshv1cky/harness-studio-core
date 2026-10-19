@@ -11,6 +11,8 @@
 
 import type {} from '@deepseek-ai/dsh-working-directory'
 import type { Context } from '@deepseek-ai/cordis'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -19,7 +21,7 @@ import type {} from '@deepseek-ai/dsh-session-projection'
 import type { ToolExecution, ToolExecutionResult, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import { Config, resolveConfig, workspaceBaselineIdentity, type ResolvedConfig } from './config.ts'
 import { findProjectRoot, loadBaselineInstructionSet } from './files.ts'
-import { trimmedInstructionDigest } from './digest.ts'
+import { instructionDuplicateKey } from './digest.ts'
 import {
   applyInstructionVersionUpdates,
   baselineInstructionState,
@@ -83,8 +85,29 @@ function filePathFromExecution(exec: ToolExecution): string | undefined {
   return filePath.length > 0 ? filePath : undefined
 }
 
+/**
+ * The instruction byte budget chosen on Harness Studio's Instructions page, saved in
+ * `<harness home>/harness-studio/instructions.json` as `{ "maxBytes": n }`, where 0 means no limit.
+ * It is read for every request, so a change applies from the next message; an absent or unreadable
+ * file, or a value under 4 KB, keeps the configured budget.
+ * @param configured - the plugin row's resolved configuration.
+ * @returns the configuration with the saved budget applied.
+ */
+export function withSavedLimit(configured: ResolvedConfig): ResolvedConfig {
+  try {
+    const saved = JSON.parse(readFileSync(join(configured.dshHome, 'harness-studio', 'instructions.json'), 'utf8')) as { maxBytes?: unknown }
+    if (saved.maxBytes === 0) return { ...configured, maxBytes: Number.MAX_SAFE_INTEGER }
+    if (typeof saved.maxBytes === 'number' && Number.isInteger(saved.maxBytes) && saved.maxBytes >= 4096) {
+      return { ...configured, maxBytes: saved.maxBytes }
+    }
+  } catch {
+    // No saved choice, or one that cannot be read: the configured budget applies.
+  }
+  return configured
+}
+
 export function apply(ctx: Context, config: Config): void {
-  const resolved: ResolvedConfig = resolveConfig(config)
+  const configured: ResolvedConfig = resolveConfig(config)
   const instructionVersions: InstructionVersionCache = new WeakMap()
   const baselinePreparations = new WeakMap<Session, {
     identity: string
@@ -115,6 +138,7 @@ export function apply(ctx: Context, config: Config): void {
     touchedPaths: readonly string[] = [],
   ): Promise<UserMessage | undefined> => {
     signal.throwIfAborted()
+    const resolved = withSavedLimit(configured)
     if (resolved.maxBytes <= 0 || !Number.isFinite(resolved.maxBytes)) {
       return undefined
     }
@@ -158,7 +182,7 @@ export function apply(ctx: Context, config: Config): void {
       for (const file of instructions?.included ?? []) {
         const group = instructionCandidateGroup(scopeForDisplayPath(file.displayPath))
         const digests = includedDigestsByGroup.get(group) ?? new Set<string>()
-        digests.add(trimmedInstructionDigest(file.content))
+        digests.add(instructionDuplicateKey(file.displayPath, file.content))
         includedDigestsByGroup.set(group, digests)
       }
       // A duplicate inherits its winner's budget omission. Only duplicates of
@@ -167,7 +191,7 @@ export function apply(ctx: Context, config: Config): void {
       for (const scope of baseline.changes.keys()) excludedScopes.delete(scope)
       for (const file of instructions?.deduped ?? []) {
         const group = instructionCandidateGroup(scopeForDisplayPath(file.displayPath))
-        if (includedDigestsByGroup.get(group)?.has(trimmedInstructionDigest(file.content))) {
+        if (includedDigestsByGroup.get(group)?.has(instructionDuplicateKey(file.displayPath, file.content))) {
           excludedScopes.delete(instructionScopeKey(file.displayPath))
         }
       }
