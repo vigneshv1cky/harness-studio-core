@@ -1116,6 +1116,11 @@ describe('renderResult', () => {
       .toBe('(no output)\n[stopped: cancelled by the user]\n[killed by signal: SIGTERM]')
   })
 
+  it('says how much of a capped spill file was left out', () => {
+    expect(renderResult({ ...base, stdout: { text: 'tail', truncated: true, spillPath: '/tmp/out.log', spillOmittedBytes: 1234 } }))
+      .toBe('tail\n[output truncated; full output: /tmp/out.log (its middle 1234 bytes were dropped to keep the file within its cap; the file holds the start and the end)]')
+  })
+
   it('notes truncation with a fallback when the spill path is missing', () => {
     expect(renderResult({ ...base, stdout: { text: 'tail', truncated: true } }))
       .toBe('tail\n[output truncated; full output: (unavailable)]')

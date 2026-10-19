@@ -11,6 +11,8 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { rmSync } from 'node:fs'
+import { basename } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -659,11 +661,16 @@ export class LocalJobRegistry extends JobRegistry {
     this.drop(owned)
   }
 
-  /** Drop settled records and announce each removal, the one visible-set change no per-job record carries. */
+  /**
+   * Drop settled records and announce each removal, the one visible-set change no per-job record carries. A
+   * dropped job's output logs go with it: they can be tens of megabytes of command output that nothing can
+   * name any more.
+   */
   private drop(jobs: readonly TrackedJob[]): void {
     for (const job of jobs) {
       this.store.delete(job.id)
       this.emit({ type: 'removed', job: this.view(job) }, job.owner)
+      removeOutputLogs(job.spillPaths)
     }
   }
 
@@ -715,3 +722,19 @@ export class LocalJobRegistry extends JobRegistry {
 }
 
 export default LocalJobRegistry
+
+/**
+ * Remove a discarded job's output logs. Only the subprocess provider's own spill files are removed (named
+ * `dsh-subprocess-*.log`), so a source that reported some other path cannot get it deleted.
+ * @param paths - the spill paths the job's sources reported.
+ */
+export function removeOutputLogs(paths: readonly (string | undefined)[]): void {
+  for (const path of new Set(paths)) {
+    if (path === undefined || !/^dsh-subprocess-.*\.log$/.test(basename(path))) continue
+    try {
+      rmSync(path, { force: true })
+    } catch {
+      // Best effort: the process-exit cleanup and temp hygiene remove what is left.
+    }
+  }
+}

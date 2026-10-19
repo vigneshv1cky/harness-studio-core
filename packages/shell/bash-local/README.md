@@ -45,7 +45,7 @@ Load the executor with the budgets you want; every field has a default, so the s
 | `timeoutMs` | `120,000` | Default foreground timeout, in milliseconds |
 | `maxTimeoutMs` | `600,000` | Cap for per-call timeout overrides |
 | `maxOutputBytes` | `64,000` | Per-stream in-memory output cap; overflow spills to a temp file |
-| `maxSpillBytes` | `67,108,864` | Per-stream full-output spill cap |
+| `maxSpillBytes` | `67,108,864` | Per-stream full-output spill cap; a longer stream keeps its first and last 32 MiB in the file, with a line naming the bytes left out between them. Output logs are removed when their job is discarded and when the process exits |
 | `graceMs` | `3,000` | Grace period for kill escalation and post-exit pipe draining |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-bash-local) is the exhaustive source for every accepted field and its JSDoc.

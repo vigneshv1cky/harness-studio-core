@@ -26,6 +26,11 @@ export interface CollectedOutput {
   truncated: boolean
   /** Path to a file holding the COMPLETE stream, when truncated and available. */
   spillPath?: string
+  /**
+   * Bytes the spill file leaves out: a stream longer than the spill cap keeps its first and last halves there,
+   * with a line in between naming this count. Absent when the file holds the whole stream.
+   */
+  spillOmittedBytes?: number
 }
 
 /**
@@ -46,7 +51,7 @@ export interface SubprocessCollect {
   maxBytes: number
   /** Full-stream spill file; absent disables spilling entirely. */
   spill?: {
-    /** Whole-stream byte cap; a larger stream discards its now-incomplete spill. */
+    /** Spill file byte cap; a larger stream keeps its first and last halves there, with the bytes between left out. */
     maxBytes: number
   }
 }
@@ -130,6 +135,8 @@ export interface SubprocessOutputRead {
   lossy: boolean
   /** Path to the full-stream spill file, when one was created and remains intact. */
   spillPath?: string
+  /** Bytes the spill file leaves out between its head and tail (see {@link CollectedOutput.spillOmittedBytes}). */
+  spillOmittedBytes?: number
 }
 
 /**

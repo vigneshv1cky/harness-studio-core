@@ -47,7 +47,7 @@ export interface Config {
   maxTimeoutMs: Volatile<number>
   /** Per-stream in-memory output cap; overflow spills to a temp file. */
   maxOutputBytes: Volatile<number>
-  /** Per-stream spill-file cap; larger streams retain only their in-memory tail. */
+  /** Per-stream spill-file cap; a larger stream keeps its first and last halves in the file, with the bytes between left out. */
   maxSpillBytes: Volatile<number>
   /** Grace period for kill escalation and inherited pipes; at most `MAX_TIMER_DELAY_MS`. */
   graceMs: Volatile<number>
@@ -60,6 +60,7 @@ function finalOutput(reader: SubprocessOutputReader): CollectedOutput {
     text: read.text,
     truncated: read.lossy,
     ...read.spillPath !== undefined ? { spillPath: read.spillPath } : {},
+    ...read.spillOmittedBytes !== undefined ? { spillOmittedBytes: read.spillOmittedBytes } : {},
   }
 }
 

@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -1327,6 +1330,25 @@ describe('LocalJobRegistry output ring', () => {
     expect(ctx.jobs.get(id).output.spillPaths).toEqual(['/spill/err.log'])
     p.settle({ status: 'completed' })
     await tick()
+  })
+
+  it('removes a job\'s output log when the job is removed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-job-spill-'))
+    try {
+      const spill = join(dir, 'dsh-subprocess-1-1-aaaaaa-stdout.log')
+      writeFileSync(spill, 'x'.repeat(4096))
+      const ctx = await harness({ retainBytes: 4, pumpPollMs: 5 })
+      const out: JobOutputSource = { channel: 'stdout', read: from => ({ text: from === 0 ? 'abcdefgh' : '', nextOffset: 8, lossy: false, spillPath: spill }) }
+      const p = producer({ output: [out] })
+      const id = ctx.jobs.start(p.spec)
+      p.settle({ status: 'completed' })
+      await tick()
+      expect(existsSync(spill)).toBe(true)
+      ctx.jobs.remove(id)
+      expect(existsSync(spill)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('announces registration before the pump drains a source that is readable at once', async () => {

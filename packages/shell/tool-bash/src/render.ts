@@ -11,7 +11,10 @@ import { escalationHintMarker, sandboxDenialMarker } from '@deepseek-ai/dsh-sand
 /** Append the truncation notice (with the full-output spill path) to a stream's text. */
 function streamText(output: CollectedOutput): string {
   if (!output.truncated) return output.text
-  return `${output.text}\n[output truncated; full output: ${output.spillPath ?? '(unavailable)'}]`
+  const omitted = output.spillPath !== undefined && output.spillOmittedBytes !== undefined
+    ? ` (its middle ${output.spillOmittedBytes} bytes were dropped to keep the file within its cap; the file holds the start and the end)`
+    : ''
+  return `${output.text}\n[output truncated; full output: ${output.spillPath ?? '(unavailable)'}${omitted}]`
 }
 
 /**

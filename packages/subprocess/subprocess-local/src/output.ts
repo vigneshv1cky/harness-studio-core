@@ -1,6 +1,6 @@
 /** Bounded output tails and private spill files shared by process providers. */
 import { randomBytes } from 'node:crypto'
-import { closeSync, mkdtempSync, openSync, rmdirSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, mkdtempSync, openSync, readSync, renameSync, rmdirSync, unlinkSync, writeSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { CollectedOutput } from '@deepseek-ai/dsh-subprocess'
@@ -17,7 +17,10 @@ export type SpillFailureReporter = (error: unknown, label: string) => void
 
 /** Spill storage for one collected stream; `undefined` means tail-only collection. */
 export interface SpillOptions {
-  /** Whole-stream byte cap beyond which an incomplete spill is discarded. */
+  /**
+   * Spill file byte cap. A longer stream keeps its first half and its last half in the file, with a line
+   * saying how many bytes between them were left out.
+   */
   maxBytes: number
   /** Private directory receiving the spill file. */
   dir: string
@@ -44,13 +47,28 @@ function privateSpillDir(): string {
   return defaultSpillDir
 }
 
-// The per-process spill directory is removed at process exit when it holds no
-// completed spill file: a directory that never spilled is empty and is safe to
-// remove, while a directory holding completed spill files keeps them (their
-// content is retained until an external cleanup). A SIGKILLed process cannot
-// run this at all; its residue is left to OS temp hygiene.
-/* v8 ignore next 4 -- exit listeners run after the coverage dump; removal is verified by the CI /tmp residue measurement. */
+/** Spill files this process created that still exist; removed when the process exits. */
+const liveSpillFiles = new Set<string>()
+
+/**
+ * Remove spill files. Output logs hold command output, which can be large (tens of megabytes) and can hold
+ * whatever a command printed, so they do not outlive the process that made them, nor a discarded job.
+ * @param files - the spill paths to remove; omitted removes every one this process created.
+ */
+export function removeSpillFiles(files: Iterable<string> = [...liveSpillFiles]): void {
+  for (const file of files) {
+    if (!liveSpillFiles.has(file)) continue
+    liveSpillFiles.delete(file)
+    try { unlinkSync(file) } catch { /* already gone */ }
+  }
+}
+
+// At a JavaScript-observable process exit every spill file this process created is removed, then the
+// per-process directory, which is empty by then. A SIGKILLed process cannot run this at all; its residue is
+// left to OS temp hygiene.
+/* v8 ignore next 5 -- exit listeners run after the coverage dump; removal is verified by the CI /tmp residue measurement. */
 process.once('exit', () => {
+  removeSpillFiles()
   if (defaultSpillDir === undefined) return
   try { rmdirSync(defaultSpillDir) } catch { /* best-effort: ENOENT/ENOTEMPTY/EBUSY/EPERM must not change the exit code. */ }
 })
@@ -135,6 +153,10 @@ export class OutputCollector {
   private spillDisabled: boolean
   /** Total bytes ever pushed (not just retained). */
   private total = 0
+  /** Stream bytes written to the spill file so far (its first `min(total, cap)` positions, then the tail ring). */
+  private spilled = 0
+  /** Set once the seal rearranged a wrapped spill into head, omission line and tail. */
+  private sealed = false
 
   /**
    * @param maxBytes - in-memory tail cap in bytes.
@@ -189,7 +211,8 @@ export class OutputCollector {
    * continues with the in-memory tail alone.
    */
   private spillAll(spill: SpillOptions, chunk: Buffer): void {
-    if (this.total > spill.maxBytes) {
+    // Below two bytes there is no room for both a head and a tail: keep the old discard.
+    if (this.total > spill.maxBytes && spill.maxBytes < 2) {
       this.discardSpill()
       return
     }
@@ -208,9 +231,10 @@ export class OutputCollector {
         const fd = openSync(file, 'wx', 0o600)
         this.spillFile = file
         this.spillFd = fd
-        for (const prior of this.chunks) writeSync(fd, prior)
+        liveSpillFiles.add(file)
+        for (const prior of this.chunks) this.spillWrite(spill.maxBytes, prior)
       }
-      writeSync(this.spillFd, chunk)
+      this.spillWrite(spill.maxBytes, chunk)
     } catch (error) {
       // ENOENT (spill directory removed by a temp cleaner), EACCES/EPERM,
       // EMFILE, or ENOSPC: the spill file is a recovery aid, not a
@@ -223,6 +247,80 @@ export class OutputCollector {
         // must not become the uncaught exception this path exists to prevent.
         process.stderr.write(`dsh-subprocess-local: spill failure reporter threw: ${String(reporterFailure)}\n`)
       }
+    }
+  }
+
+  /**
+   * Append stream bytes to the spill file within its cap. The first half of the cap holds the stream's head;
+   * the second half is a ring holding its tail: stream byte `p` past the head lands at
+   * `head + (p - head) % tail`, which is `p` itself until the stream outgrows the cap, so a stream within the
+   * cap is written exactly as before. {@link seal} puts a wrapped ring back in order.
+   */
+  private spillWrite(cap: number, chunk: Buffer): void {
+    const fd = this.spillFd as number
+    const head = Math.floor(cap / 2)
+    const tail = cap - head
+    let data = chunk
+    let position = this.spilled
+    this.spilled += chunk.length
+    // Bytes that will be overwritten within this same chunk need not be written.
+    if (position >= head && data.length > tail) {
+      position += data.length - tail
+      data = data.subarray(data.length - tail)
+    }
+    while (data.length > 0) {
+      const offset = position < head ? position : head + ((position - head) % tail)
+      const room = position < head ? head - position : head + tail - offset
+      const piece = data.subarray(0, Math.min(room, data.length))
+      writeSync(fd, piece, 0, piece.length, offset)
+      position += piece.length
+      data = data.subarray(piece.length)
+    }
+  }
+
+  /** Bytes the spill file leaves out between its head and tail: zero while the stream fits its cap. */
+  private omittedBytes(): number {
+    const cap = this.spill?.maxBytes ?? 0
+    return this.spillFile === undefined || this.spilled <= cap ? 0 : this.spilled - cap
+  }
+
+  /**
+   * Rewrite a wrapped spill as head, one line naming how many bytes were left out, then the tail in order,
+   * through a sibling file renamed over it, copying in bounded pieces.
+   */
+  private rearrangeSpill(cap: number): void {
+    const file = this.spillFile as string
+    const head = Math.floor(cap / 2)
+    const tail = cap - head
+    const start = head + ((this.spilled - head) % tail)
+    const omitted = this.spilled - cap
+    const ordered = `${file}.${randomBytes(4).toString('hex')}.tmp`
+    const source = openSync(file, 'r')
+    let target: number | undefined
+    try {
+      target = openSync(ordered, 'wx', 0o600)
+      const piece = Buffer.allocUnsafe(Math.min(1024 * 1024, cap))
+      const copy = (from: number, length: number): void => {
+        for (let done = 0; done < length;) {
+          const read = readSync(source, piece, 0, Math.min(piece.length, length - done), from + done)
+          if (read === 0) throw new Error('spill file ended early')
+          writeSync(target as number, piece, 0, read)
+          done += read
+        }
+      }
+      copy(0, head)
+      writeSync(target, `\n[... ${omitted} bytes of output omitted: the output was ${this.spilled} bytes, more than the ${cap}-byte log keeps; this file holds its first ${head} and last ${tail} bytes ...]\n`)
+      copy(start, head + tail - start)
+      copy(head, start - head)
+      closeSync(target)
+      target = undefined
+      renameSync(ordered, file)
+    } catch (error) {
+      if (target !== undefined) try { closeSync(target) } catch { /* reported below */ }
+      try { unlinkSync(ordered) } catch { /* never created */ }
+      throw error
+    } finally {
+      closeSync(source)
     }
   }
 
@@ -242,6 +340,7 @@ export class OutputCollector {
       }
     }
     if (file !== undefined) {
+      liveSpillFiles.delete(file)
       try {
         unlinkSync(file)
       } catch {
@@ -258,16 +357,20 @@ export class OutputCollector {
    * @param fromByte - whole-stream offset to resume from (a prior read's `nextOffset`; 0 for the first read).
    * @returns the delta text, the offset for the next read, the `lossy` flag, and the spill path when one was created.
    */
-  readFrom(fromByte: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string } {
+  readFrom(fromByte: number): { text: string; nextOffset: number; lossy: boolean; spillPath?: string; spillOmittedBytes?: number } {
     const windowStart = this.total - this.bytes
     const buffer = Buffer.concat(this.chunks)
     const lossy = fromByte < windowStart
     const slice = lossy ? buffer : buffer.subarray(fromByte - windowStart)
+    const omitted = this.omittedBytes()
+    // A spill that outgrew its cap is a ring until the seal puts it in order: not worth reading before then.
+    const spillPath = omitted === 0 || this.sealed ? this.spillFile : undefined
     return {
       text: slice.toString('utf8'),
       nextOffset: this.total,
       lossy,
-      ...this.spillFile !== undefined ? { spillPath: this.spillFile } : {},
+      ...spillPath !== undefined ? { spillPath } : {},
+      ...spillPath !== undefined && omitted > 0 ? { spillOmittedBytes: omitted } : {},
     }
   }
 
@@ -296,6 +399,18 @@ export class OutputCollector {
       this.spillFile = undefined
     }
     this.spillFd = undefined
+    if (this.spillFile !== undefined && this.spill !== undefined && this.spilled > this.spill.maxBytes) {
+      try {
+        this.rearrangeSpill(this.spill.maxBytes)
+      } catch (error) {
+        const file = this.spillFile
+        this.spillFile = undefined
+        liveSpillFiles.delete(file)
+        try { unlinkSync(file) } catch { /* reported below */ }
+        try { this.spill.onFailure(error, this.label) } catch { /* contained, as in spillAll */ }
+      }
+    }
+    this.sealed = true
   }
 
   /**
@@ -304,10 +419,20 @@ export class OutputCollector {
    */
   finalize(): CollectedOutput {
     this.seal()
+    const omitted = this.omittedBytes()
     return {
       text: Buffer.concat(this.chunks).toString('utf8'),
       truncated: this.dropped,
       ...this.spillFile !== undefined ? { spillPath: this.spillFile } : {},
+      ...this.spillFile !== undefined && omitted > 0 ? { spillOmittedBytes: omitted } : {},
     }
+  }
+
+  /** Remove this stream's spill file now, as when its job is discarded. */
+  removeSpill(): void {
+    this.seal()
+    const file = this.spillFile
+    this.spillFile = undefined
+    if (file !== undefined) removeSpillFiles([file])
   }
 }

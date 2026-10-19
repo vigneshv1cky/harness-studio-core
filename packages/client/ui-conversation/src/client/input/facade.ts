@@ -56,6 +56,12 @@ export interface SessionInputDeps {
    * order (the empty-draft accelerated-Enter gesture); absent = unsupported.
    */
   steerQueue?: (() => void) | undefined
+  /**
+   * Receives the text of a plain send cut off by this shell's release (its Session scope torn down, as when
+   * the Session is re-created while a message is on its way) before the Host accepted it, so the text can be
+   * given back instead of vanishing with the cleared composer. Not called for a send the Host accepted.
+   */
+  orphaned?: ((text: string) => void) | undefined
   /** The plain-message sink (send choreography / materialize fork — the hub owns it). */
   defaultSink(
     text: string,
@@ -252,6 +258,19 @@ export class SessionInputShell implements SessionInput {
     }
     this.setDraft(options.prompt ?? '')
     return 'applied'
+  }
+
+  /**
+   * Put back the text of a message another shell could not send: into an empty composer as it was, else
+   * above what is there, so nothing typed since is lost.
+   * @param text - the unsent message.
+   * @returns false after disposal or while a submission is pending.
+   */
+  restoreUnsent(text: string): boolean {
+    if (this.draftInitializationBlocked()) return false
+    const current = this.snapshot.draft
+    this.setDraft(current.trim() === '' ? text : `${text}\n\n${current}`)
+    return true
   }
 
   private draftInitializationBlocked(): boolean {
@@ -700,7 +719,7 @@ export class SessionInputShell implements SessionInput {
       this.failedRestoreRev = undefined
     }
     if (occurrences.length === 0) {
-      this.settleSink(attempt, this.deps.defaultSink(draft.trim(), attachmentIds, mode, attempt.signal))
+      this.settleSink(attempt, draft, this.deps.defaultSink(draft.trim(), attachmentIds, mode, attempt.signal))
       return
     }
     const inputTriggers = this.deps.inputTriggers?.()
@@ -713,7 +732,10 @@ export class SessionInputShell implements SessionInput {
       }
     })).then(
       (parts) => {
-        if (this.disposed) return
+        if (this.disposed) {
+          this.orphan(draft)
+          return
+        }
         // Splice model forms over their clipboard ranges (offsets are
         // clipboard-projection; parts arrive offset-sorted since chips walk in
         // document order).
@@ -724,14 +746,23 @@ export class SessionInputShell implements SessionInput {
           cursor = part.offset + part.length
         }
         out += draft.slice(cursor)
-        this.settleSink(attempt, this.deps.defaultSink(out.trim(), attachmentIds, mode, attempt.signal))
+        this.settleSink(attempt, draft, this.deps.defaultSink(out.trim(), attachmentIds, mode, attempt.signal))
       },
       (error: unknown) => {
-        if (this.dead(attempt)) return
+        if (this.dead(attempt)) {
+          this.orphan(draft)
+          return
+        }
         const message = error instanceof Error ? error.message : String(error)
         this.settleDetachedFailure(attempt, message)
       },
     )
+  }
+
+  /** Hand a cut-off send's text to the owner; a failing owner cannot break settlement. */
+  private orphan(draft: string): void {
+    if (draft.trim() === '') return
+    try { this.deps.orphaned?.(draft) } catch (_error) { /* The text stays lost rather than throwing into a settled promise. */ }
   }
 
   private notifySubmission(submission: MessageSubmission | undefined): void {
@@ -742,11 +773,16 @@ export class SessionInputShell implements SessionInput {
   /** Settle one detached default send independently of other sends. */
   private settleSink(
     attempt: SubmitAttempt,
+    draft: string,
     pending: Promise<SubmitOutcome>,
   ): void {
     pending.then(
       (outcome) => {
-        if (this.dead(attempt)) return
+        if (this.dead(attempt)) {
+          // Released before the Host accepted it: the composer was already cleared, so give the text back.
+          if (outcome.kind !== 'success') this.orphan(draft)
+          return
+        }
         if (outcome.kind !== 'success') {
           this.settleDetachedFailure(attempt, outcome.text)
           return
@@ -755,7 +791,10 @@ export class SessionInputShell implements SessionInput {
         this.dispatchRun(({ type: 'sink-settled', attempt, ok: true, outcome }))
       },
       (error: unknown) => {
-        if (this.dead(attempt)) return
+        if (this.dead(attempt)) {
+          this.orphan(draft)
+          return
+        }
         this.settleDetachedFailure(attempt, error instanceof Error ? error.message : String(error))
       },
     )

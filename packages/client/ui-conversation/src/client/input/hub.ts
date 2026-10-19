@@ -51,9 +51,16 @@ interface ConversationAttachmentFace {
   releaseDraftAttachment(id: DraftAttachmentId): void
 }
 
+/** How long unsent text from a replaced Session waits for a composer of another Session. */
+const UNSENT_ADOPTION_MS = 60_000
+
 /** Session-addressed input facade registry (SessionInputResolver face + composer-layer extras). */
 export class InputHub implements SessionInputResolver {
   private readonly shells = new WeakMap<SessionBinding, SessionInputShell>()
+  /** The newest live shell per Session id, where text a released shell could not send is given back. */
+  private readonly latest = new Map<SessionId, SessionInputShell>()
+  /** Unsent text waiting for a composer: a message sent while its Session was being replaced. */
+  private readonly unsent: { sessionId: SessionId; text: string; at: number }[] = []
 
   /**
    * @param ctx - client root context (services resolved lazily per call — boot order stays free).
@@ -120,6 +127,7 @@ export class InputHub implements SessionInputResolver {
       popup: () => this.popup(actx),
       inbox: session.projections.faceOf('inbox') as ObservableSnapshot<InboxState | undefined>,
       defaultSink: (text, attachmentIds, mode, signal) => this.sink(session, text, attachmentIds, mode, signal),
+      orphaned: (text) => { this.giveBack(binding.sessionId, text, shell) },
       steerQueue: () => { void this.steerQueue(session, shell) },
       commandAttachments: {
         serialize: async (ids) => {
@@ -157,6 +165,7 @@ export class InputHub implements SessionInputResolver {
         for (const off of offs) off()
         const drafts = shell.dispose()
         this.shells.delete(binding)
+        if (this.latest.get(binding.sessionId) === shell) this.latest.delete(binding.sessionId)
         const conversation = this.rootCtx.get('conversation') as ConversationAttachmentFace | undefined
         for (const attachmentId of drafts) conversation?.releaseDraftAttachment(attachmentId)
       }
@@ -168,7 +177,46 @@ export class InputHub implements SessionInputResolver {
       }, 'conversation.input: reference catalogs')
     })
     shell.setDraft(readConversationDraft(binding.sessionId))
+    this.latest.set(binding.sessionId, shell)
+    this.adoptUnsent(binding.sessionId, shell)
     return shell
+  }
+
+  /**
+   * Give a cut-off message back: to the Session's newest live composer, or, when none is open yet (the
+   * Session is still being created or replaced), to the next composer that opens for it.
+   */
+  private giveBack(sessionId: SessionId, text: string, from: SessionInputShell): void {
+    const target = this.latest.get(sessionId)
+    if (target !== undefined && target !== from && this.restoreInto(target, text)) return
+    this.unsent.push({ sessionId, text, at: Date.now() })
+  }
+
+  /**
+   * Hand waiting unsent text to a new composer: its own Session's first, then, within a minute, text whose
+   * Session was replaced by a new one, which is the composer the person is looking at.
+   */
+  private adoptUnsent(sessionId: SessionId, shell: SessionInputShell): void {
+    const now = Date.now()
+    for (let index = 0; index < this.unsent.length;) {
+      const entry = this.unsent[index]!
+      const stale = now - entry.at > UNSENT_ADOPTION_MS
+      if (entry.sessionId !== sessionId && stale) {
+        this.unsent.splice(index, 1)
+        continue
+      }
+      if ((entry.sessionId === sessionId || !stale) && this.restoreInto(shell, entry.text)) {
+        this.unsent.splice(index, 1)
+        continue
+      }
+      index += 1
+    }
+  }
+
+  private restoreInto(shell: SessionInputShell, text: string): boolean {
+    if (!shell.restoreUnsent(text)) return false
+    shell.notify('error', this.t('input.unsentRestored'))
+    return true
   }
 
   /**

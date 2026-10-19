@@ -1,6 +1,6 @@
-import { logSpillFailure, OutputCollector, type SpillOptions } from '../src/output.ts'
+import { logSpillFailure, OutputCollector, removeSpillFiles, type SpillOptions } from '../src/output.ts'
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
@@ -598,7 +598,7 @@ describe('OutputCollector', () => {
     expect(out!.spillPath).toBeUndefined()
   })
 
-  it('discards a spill that exceeds its configured cap', () => {
+  it('keeps the head and the tail of a stream that outgrows its spill cap, and says how much was left out', () => {
     const collector = new OutputCollector(4, 'bounded', spillOptions(8).options)
     collector.push(Buffer.from('aaaa'))
     collector.push(Buffer.from('bbbb'))
@@ -607,35 +607,55 @@ describe('OutputCollector', () => {
 
     collector.push(Buffer.from('c'))
     collector.push(Buffer.from('dddd'))
+    // While the stream runs past the cap the file is a ring, so it is not offered for reading.
+    expect(collector.readFrom(0).spillPath).toBeUndefined()
     const out = collector.finalize()
     expect(out.text).toBe('dddd')
     expect(out.truncated).toBe(true)
-    expect(out.spillPath).toBeUndefined()
-    expect(() => readFileSync(spillPath)).toThrow()
+    expect(out.spillPath).toBe(spillPath)
+    expect(out.spillOmittedBytes).toBe(5)
+    expect(readFileSync(spillPath, 'utf8')).toBe('aaaa\n[... 5 bytes of output omitted: the output was 13 bytes, more than the 8-byte log keeps; this file holds its first 4 and last 4 bytes ...]\ndddd')
+    expect(collector.readFrom(0)).toMatchObject({ spillPath, spillOmittedBytes: 5 })
+    collector.removeSpill()
+    expect(existsSync(spillPath)).toBe(false)
   })
 
-  it('does not create a spill when the first overflowing chunk exceeds the cap', () => {
-    const collector = new OutputCollector(4, 'no-spill', spillOptions(4).options)
+  it('keeps the head and the tail when one chunk is larger than the whole cap', () => {
+    const collector = new OutputCollector(4, 'one-chunk', spillOptions(4).options)
     collector.push(Buffer.from('abcdefgh'))
+    collector.push(Buffer.from('ijk'))
     const out = collector.finalize()
-    expect(out.text).toBe('efgh')
-    expect(out.truncated).toBe(true)
-    expect(out.spillPath).toBeUndefined()
+    expect(out.text).toBe('hijk')
+    expect(out.spillOmittedBytes).toBe(7)
+    expect(readFileSync(out.spillPath!, 'utf8')).toBe('ab\n[... 7 bytes of output omitted: the output was 11 bytes, more than the 4-byte log keeps; this file holds its first 2 and last 2 bytes ...]\njk')
+    removeSpillFiles([out.spillPath!])
+    expect(existsSync(out.spillPath!)).toBe(false)
   })
 
-  it('contains cleanup failures while disabling an oversize spill', () => {
-    const collector = new OutputCollector(4, 'cleanup-fail', spillOptions(8).options)
-    collector.push(Buffer.from('aaaa'))
-    collector.push(Buffer.from('bbbb'))
-    const spillPath = collector.readFrom(0).spillPath!
+  it('keeps the tail in order across many wraps of the ring', () => {
+    const collector = new OutputCollector(16, 'wraps', spillOptions(64).options)
+    const lines = Array.from({ length: 500 }, (_, i) => `line-${String(i).padStart(4, '0')}\n`)
+    for (const line of lines) collector.push(Buffer.from(line))
+    const out = collector.finalize()
+    const all = lines.join('')
+    const file = readFileSync(out.spillPath!, 'utf8')
+    expect(file.startsWith(all.slice(0, 32))).toBe(true)
+    expect(file.endsWith(all.slice(-32))).toBe(true)
+    expect(out.spillOmittedBytes).toBe(all.length - 64)
+    collector.removeSpill()
+  })
 
-    failNextClose.value = true
-    failNextUnlink.value = true
-    expect(() => { collector.push(Buffer.from('c')) }).not.toThrow()
-    expect(failNextClose.value).toBe(false)
-    expect(failNextUnlink.value).toBe(false)
-    expect(collector.finalize().spillPath).toBeUndefined()
-    unlinkSync(spillPath)
+  it('removes the spill and reports it when putting a wrapped spill in order fails', () => {
+    const { options, failures } = spillOptions(8)
+    const collector = new OutputCollector(4, 'rearrange-fail', options)
+    for (const chunk of ['aaaa', 'bbbb', 'cccc']) collector.push(Buffer.from(chunk))
+    const spillPath = (collector as unknown as { spillFile: string }).spillFile
+    failNextWrite.value = true
+    const out = collector.finalize()
+    expect(out.spillPath).toBeUndefined()
+    expect(out.text).toBe('cccc')
+    expect(failures).toHaveLength(1)
+    expect(existsSync(spillPath)).toBe(false)
   })
 
   it('keeps collecting when the spill directory has been removed (ENOENT on open)', () => {
