@@ -21,6 +21,7 @@ import { SessionQueryError } from '@deepseek-ai/dsh-session-query'
 import { createInboxStub, provideWorkingDirectoryFixture } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { apply, Config } from '../src/index.ts'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
+import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import { internals } from '../src/runner-internals.ts'
 
 const originalInternals = { ...internals }
@@ -51,6 +52,8 @@ interface BenchOptions {
   chatLines?: string[]
   /** Report stdout as a terminal, so the chat streams its answer. */
   terminal?: boolean
+  /** Lines typed at each approval question, in order; undefined waits until the question is withdrawn. */
+  approvalAnswers?: (string | undefined)[]
   observe?: () => Promise<ObservationStub>
   /** Leave the query service unmounted to exercise the fail-loud path. */
   omitSessionQuery?: boolean
@@ -224,6 +227,12 @@ async function bench(script: Script, options: BenchOptions = {}): Promise<{
           prompt: () => { order.push('prompt') },
           onInterrupt: () => {},
           close: () => {},
+          ask: (question: string, signal?: AbortSignal) => {
+            order.push(`ask ${question}`)
+            const answer = options.approvalAnswers?.shift()
+            if (answer !== undefined) return Promise.resolve(answer)
+            return new Promise<undefined>((resolve) => { signal?.addEventListener('abort', () => { resolve(undefined) }) })
+          },
         })
       }
       const exited = new Promise<number>((resolve) => {
@@ -369,6 +378,42 @@ describe('headless runner', () => {
     expect(result.out).toBe('Answer at the end.\n\n')
     expect(result.err).toContain('dsh: reasoning:\nthinkingagain\ndsh: reasoning:\nmore\ndsh: reasoning:\nthen a call\ndsh: reasoning:\nlast\ndsh: reasoning:\ntrailing\n')
     expect(result.err).toContain('• todo_write\n  ✗ tool: failed\n')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('asks the chat agent\'s approvals on the input line: y allows once, anything else rejects, withdrawal cancels', async () => {
+    const outcomes: string[] = []
+    const test = await bench({
+      async afterPrompt(session, message, agent) {
+        await Promise.resolve()
+        session.append('turn/start', { turn: 1 })
+        session.append('step/start', { turn: 1, step: 1 })
+        session.append('user/message', message, { surfaceOp: 'append' })
+        const ask = (overrides: { reason?: string; displayReason?: { en: string }; signal?: AbortSignal } = {}) =>
+          test.ctx.approval.request({ agent, toolName: 'bash', ...overrides })
+        outcomes.push(await ask({ reason: 'raw reason', displayReason: { en: 'Run \u001b[2J make clean' } }))
+        outcomes.push(await ask({ reason: 'delete build' }))
+        outcomes.push(await ask())
+        const controller = new AbortController()
+        const pending = ask({ signal: controller.signal })
+        await Promise.resolve()
+        controller.abort()
+        outcomes.push(await pending)
+        // A request that reaches this agent's scope for another agent is passed on, not answered.
+        const other = test.ctx.sessions.create()
+        outcomes.push(await agent.ctx.waterfall('approval/request', { agent: { session: other } as Agent, toolName: 'bash' }, () => Promise.resolve('unavailable')))
+        session.append('step/end', { turn: 1, step: 1 })
+        session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      },
+    }, { chatLines: ['clean up'], approvalAnswers: [' YES ', 'n', ''] })
+    await test.ctx.plugin(ApprovalService)
+    const result = await test.run()
+    expect(outcomes).toEqual(['allowed-once', 'rejected', 'rejected', 'cancelled', 'unavailable'])
+    expect(result.err).toContain('\n! bash: Run \\x1b[2J make clean\n  allowed once\n')
+    expect(result.err).toContain('\n! bash: delete build\n  rejected\n')
+    expect(result.err).toContain('\n! bash: it needs your approval\n  rejected\n')
+    expect(result.err).toContain('  withdrawn\n')
+    expect(result.order.filter(entry => entry.startsWith('ask '))).toEqual(Array(4).fill('ask Allow once? [y/N] '))
     await test.ctx.fiber.dispose()
   })
 

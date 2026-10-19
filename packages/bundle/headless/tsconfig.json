@@ -39,6 +39,9 @@
       "path": "../../fs/fs"
     },
     {
+      "path": "../../interaction/user-approval"
+    },
+    {
       "path": "../../subagent/subagent"
     }
   ]
