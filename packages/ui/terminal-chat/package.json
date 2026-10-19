@@ -2,7 +2,9 @@
   "name": "@deepseek-ai/dsh-terminal-chat",
   "description": "Harness Studio: the full-screen terminal chat, drawn with Ink, for the harness-studio command",
   "version": "0.2.1-rc.2",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/vigneshv1cky/harness-studio-core.git",
