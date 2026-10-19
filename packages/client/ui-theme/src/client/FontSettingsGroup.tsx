@@ -23,7 +23,7 @@ export interface FontSettingsInjected {
 
 /** Full component props: runtime share + store share + locale seat + injected face. */
 export type FontSettingsGroupProps =
-  PropsRuntime<'settings.general.item'> & PropsStore<ReturnType<typeof createFontRowStore>>
+  PropsRuntime<'settings.appearance.item'> & PropsStore<ReturnType<typeof createFontRowStore>>
   & PropsLocale<'settings.theme'> & FontSettingsInjected
 
 /**

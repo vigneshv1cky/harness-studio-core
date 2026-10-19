@@ -21,7 +21,7 @@ import { ShortcutRegistry } from '../../shortcuts/src/client/registry.ts'
 // so browser-language detection never runs and a fresh LocaleRuntime opens on
 // FALLBACK_LOCALE (en); bench stages zh explicitly on the locale instead.
 
-const SLOT = 'settings.general.item'
+const SLOT = 'settings.appearance.item'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -302,10 +302,10 @@ describe('ui-theme apply', () => {
     const before = await bench()
     declareItems(before.slots)
     await before.ctx.plugin({ inject: [...inject], apply }).await()
-    expect(before.locale.bind(SETTINGS_NS)('appearance.title')).toBe('外观')
+    expect(before.locale.bind(SETTINGS_NS)('appearance.title')).toBe('浅色或深色')
     expect(before.locale.bind(SETTINGS_NS)('fontSize.text.title')).toBe('字号大小')
     before.locale.setLocale('en')
-    expect(before.locale.bind(SETTINGS_NS)('appearance.title')).toBe('Appearance')
+    expect(before.locale.bind(SETTINGS_NS)('appearance.title')).toBe('Light or dark')
     const entry = before.slots.entries(SLOT).find(e => e.component === AppearanceRow)!
     expect(entry.options).toMatchObject({ id: 'appearance', order: 10 })
     const fontEntry = before.slots.entries(SLOT).find(e => e.component === FontSettingsGroup)!

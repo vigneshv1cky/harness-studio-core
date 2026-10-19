@@ -10,3 +10,8 @@
 .section > :global([data-slot='settings.general.item']) > :last-child {
   border-bottom: none;
 }
+
+.section > :global([data-slot='settings.appearance.item']) > :last-child,
+.section > :global([data-slot='settings.permissions.item']) > :last-child {
+  border-bottom: none;
+}

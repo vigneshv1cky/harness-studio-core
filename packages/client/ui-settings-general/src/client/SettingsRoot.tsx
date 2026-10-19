@@ -15,8 +15,9 @@ import { createPortal } from 'react-dom'
 import clsx from 'clsx'
 import {
   ConnectionIndicator, Tooltip, useModalLayer,
-  IconAgentPresetOutlineMedium, IconArchiveOutlineMedium, IconCloseOutlineRegular, IconDataOutlineMedium,
-  IconPersonalizationOutlineMedium, IconSettingsOutlineMedium, IconUserOutlineMedium,
+  IconAgentPresetOutlineMedium, IconArchiveOutlineMedium, IconBrowseOutlineMedium, IconCloseOutlineRegular, IconDataOutlineMedium,
+  IconFolderOpenOutlineMedium, IconLightOutlineMedium, IconLinkOutlineMedium, IconPersonalizationOutlineMedium,
+  IconSettingsOutlineMedium, IconShieldOutlineMedium, IconUserOutlineMedium,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ConnectionIndicatorState } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SettingsRootComponentProps, SettingsSectionRow } from './shell-contract.ts'
@@ -35,6 +36,12 @@ function navIcon(id: string) {
   if (id === 'agent-presets') return <IconAgentPresetOutlineMedium className={css.navIcon} size={16} />
   if (id === 'plugins') return <IconPersonalizationOutlineMedium className={css.navIcon} size={16} />
   if (id === 'archived-sessions') return <IconArchiveOutlineMedium className={css.navIcon} size={16} />
+  // Harness Studio's pages: Appearance and Permissions (this package), Computer use and Data (Compact), Connectors.
+  if (id === 'appearance') return <IconLightOutlineMedium className={css.navIcon} size={16} />
+  if (id === 'permissions') return <IconShieldOutlineMedium className={css.navIcon} size={16} />
+  if (id === 'computer-use') return <IconBrowseOutlineMedium className={css.navIcon} size={16} />
+  if (id === 'connectors') return <IconLinkOutlineMedium className={css.navIcon} size={16} />
+  if (id === 'data') return <IconFolderOpenOutlineMedium className={css.navIcon} size={16} />
   return <IconSettingsOutlineMedium className={css.navIcon} size={16} />
 }
 

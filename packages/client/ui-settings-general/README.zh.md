@@ -45,7 +45,7 @@ Web 与桌面端的通用设置底部显示当前发布版本，使用构建注�
 
 代码工作工具开关控制 [ui-settings](../ui-settings/README.zh.md#use-this-package) 定义的共享偏好 `ui-settings.enabled`。Web 和桌面端均提供此开关，立即跟随已接受的变更，并在写入完成前禁用重复输入。写入失败时显示本地化的重试提示。
 
-「通用」分区承载内置的代码工作工具行与当前版本行，以及功能包注册进 `settings.general.item` 的行。每个注册方拥有自己的行文案与行为。例如「外观」行位于 ui-theme。
+「通用」分区承载内置的代码工作工具行与当前版本行，以及功能包注册进 `settings.general.item` 的行。每个注册方拥有自己的行文案与行为。本包另外声明两个使用相同行契约的页面：「外观」（`settings.appearance.item`：locale 的语言行，以及 ui-theme 的浅色或深色与字体行）和「权限」（`settings.permissions.item`：ui-permission-presets 的默认权限预设行）。每个页面与「通用」一样去掉最后一行下方的分隔线。
 
 ### 打开配置文件
 

@@ -19,7 +19,7 @@ export interface LanguageRowInjected {
 
 /** Full component props: runtime share + store share + locale seat + injected face. */
 export type LanguageRowComponentProps =
-  PropsRuntime<'settings.general.item'> & PropsStore<ReturnType<typeof createLanguageRowStore>>
+  PropsRuntime<'settings.appearance.item'> & PropsStore<ReturnType<typeof createLanguageRowStore>>
   & PropsLocale<'settings.locale'> & LanguageRowInjected
 
 /**

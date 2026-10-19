@@ -14,7 +14,7 @@ import { LOCALE_SETTINGS_NAMESPACE, LocaleSettingsSchema } from '../src/locale-s
 import { LanguageRow } from '../src/client/LanguageRow.tsx'
 import type { createLanguageRowStore } from '../src/client/settings-store.ts'
 
-const SLOT = 'settings.general.item'
+const SLOT = 'settings.appearance.item'
 afterEach(() => { vi.unstubAllGlobals() })
 
 async function bench(preference?: string) {

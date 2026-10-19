@@ -67,7 +67,7 @@ describe('TranscriptViewRow', () => {
   })
 
   it.each([
-    [en, 'Work details', 'When to Collapse Work Details',
+    [en, 'Work details', 'When to collapse work details',
       'Choose when to automatically collapse work details', 'On completion', 'On next message'],
     [zh, '工作步骤展示', '工作步骤收起时机', '选择何时自动收起工作步骤', '回答结束后', '下次有新消息时'],
   ] as const)('selects either collapse timing independently with localized labels (%s)', (dictionary, detailTitle, title, description, completion, nextInput) => {
@@ -199,14 +199,14 @@ describe('LinkOpeningRow', () => {
     />)
     expect(screen.queryByText('Open chat links in')).toBeNull()
     act(() => { browserAvailable.set(true) })
-    expect(screen.getByRole('button', { name: 'Default Browser' })).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Default browser' })).toBeDefined()
     act(() => { browserAvailable.set(false) })
     expect(screen.queryByText('Open chat links in')).toBeNull()
     expect(source.getSnapshot()).toBe('new-tab')
   })
 
   it.each([
-    [en, 'Open chat links in', 'Choose where to open web links', 'In-App Sidebar', 'Default Browser'],
+    [en, 'Open chat links in', 'Choose where to open web links', 'In-app sidebar', 'Default browser'],
     [zh, '网页链接默认打开方式', '对话中网页链接的打开位置', '应用内侧边栏', '默认浏览器'],
   ] as const)('selects either destination using localized labels (%s)', (dictionary, title, description, sidebar, newTab) => {
     const b = mount('compact', dictionary)

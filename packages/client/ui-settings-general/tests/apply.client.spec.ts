@@ -62,7 +62,8 @@ async function client(mock: RemoteMock, start: () => Promise<TestClient>, hasDoc
 
 /** This plugin's rows in a seat: the list seats also carry feature-owned rows (the product's other sections and actions). */
 function ownEntries(c: TestClient, name: (typeof SEATS)[number][0]) {
-  return c.ctx.slots.entries(name).filter(entry => entry.locale === NS)
+  // The section seat also carries this plugin's Appearance and Permissions pages, checked on their own below.
+  return c.ctx.slots.entries(name).filter(entry => entry.locale === NS && (name !== 'settings.section' || entry.options.id === 'general'))
 }
 
 function generalEntry(c: TestClient) {
@@ -116,6 +117,11 @@ describe('ui-settings-general apply', () => {
     const { controller, hooks } = actionInjectedOf(c)
     expect(controller.store.getSnapshot().status).toBe('idle')
     expect(hooks.snapshot).toBe(controller.store)
+    // Appearance and Permissions are pages of their own, each declaring its own row list.
+    const pages = c.ctx.slots.entries('settings.section').filter(entry => entry.locale === NS && entry.options.id !== 'general')
+    expect(pages.map(entry => [entry.options.id, entry.options.order, resolveSlotLabel(entry.options.label)])).toEqual([['appearance', 1, '外观'], ['permissions', 2, '权限']])
+    expect(c.ctx.slots.spec('settings.appearance.item')).toEqual({ kind: 'list', scope: 'root' })
+    expect(c.ctx.slots.spec('settings.permissions.item')).toEqual({ kind: 'list', scope: 'root' })
     // Copy rides the standard locale seat: every row this plugin seats declares the namespace.
     for (const [name, component] of SEATS) {
       expect(c.ctx.slots.entries(name).find(row => row.component === component)!.locale).toBe(NS)

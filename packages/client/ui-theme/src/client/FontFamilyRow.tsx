@@ -23,7 +23,7 @@ export interface FontFamilyRowInjected {
 
 /** Full component props: runtime share + store share + locale seat + injected face. */
 export type FontFamilyRowComponentProps =
-  PropsRuntime<'settings.general.item'> & PropsStore<ReturnType<typeof createFontRowStore>>
+  PropsRuntime<'settings.appearance.item'> & PropsStore<ReturnType<typeof createFontRowStore>>
   & PropsLocale<'settings.theme'> & FontFamilyRowInjected
 
 /**

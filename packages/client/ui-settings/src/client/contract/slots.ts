@@ -90,6 +90,16 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * layer and every registrant already depends on it for `ctx.configForms`.
      */
     'settings.general.item': { kind: 'list'; scope: 'root'; owner: SettingsGeneralItemOwnerProps }
+    /**
+     * Harness Studio: one preference row on the Appearance page (language, light or dark, fonts), with the
+     * same contract as `settings.general.item`. Declared at runtime by ui-settings-general's Appearance entry.
+     */
+    'settings.appearance.item': { kind: 'list'; scope: 'root'; owner: SettingsGeneralItemOwnerProps }
+    /**
+     * Harness Studio: one preference row on the Permissions page (permission mode, network, credentials), with
+     * the same contract as `settings.general.item`. Declared at runtime by ui-settings-general's Permissions entry.
+     */
+    'settings.permissions.item': { kind: 'list'; scope: 'root'; owner: SettingsGeneralItemOwnerProps }
   }
 }
 /** Owner share of a General preference row (the section supplies nothing). */

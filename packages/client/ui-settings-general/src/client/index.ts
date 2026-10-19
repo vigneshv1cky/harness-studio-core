@@ -35,6 +35,7 @@ import type { DesktopUpdateBridge } from '../types.ts'
 import { DesktopUpdateSource } from './desktop-update-source.ts'
 import { CloseLabel, HeaderContent, TriggerContent } from './chrome.tsx'
 import { GeneralSection } from './GeneralSection.tsx'
+import { AppearanceSection, PermissionsSection } from './PageSections.tsx'
 import { CurrentVersionRow } from './CurrentVersionRow.tsx'
 import { DeveloperToolsRow, type DeveloperToolsRowInjected } from './DeveloperToolsRow.tsx'
 import { SettingsDocumentAction } from './SettingsDocumentAction.tsx'
@@ -245,6 +246,23 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
     children: { 'settings.general.item': { kind: 'list', scope: 'root' } },
   }, GeneralSection))
+  // Harness Studio: General keeps chat behaviour; looks and permissions have pages of their own.
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'appearance',
+    order: 1,
+    label: () => t('appearance.nav'),
+    locale: NS,
+    children: { 'settings.appearance.item': { kind: 'list', scope: 'root' } },
+  }, AppearanceSection))
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'permissions',
+    order: 2,
+    label: () => t('permissions.nav'),
+    locale: NS,
+    children: { 'settings.permissions.item': { kind: 'list', scope: 'root' } },
+  }, PermissionsSection))
   // The page's module system applies no plugin update from another Host release; this dialog offers the reload.
   const releasePromptInjected = (): HostReleasePromptInjected => ({
     dismissRelease: () => { ctx.modules.entries.dismissRelease() },
