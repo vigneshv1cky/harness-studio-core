@@ -16,6 +16,7 @@ import {
 import { join } from 'node:path'
 import {
   DESKTOP_HOST_PACKAGE,
+  STUDIO_BUNDLED_PLUGINS,
   desktopCorePackageOverrides,
   verifyDesktopCorePackageSet,
 } from './core-package-set.ts'
@@ -23,7 +24,7 @@ import type { DesktopPaths } from './paths.ts'
 import type { DesktopRelease } from './release.ts'
 import { readDesktopRuntime } from './runtime-tree.ts'
 import {
-  initProfile, PROFILE_TEMPLATES, removeLinkProjections, sanitizeProfile, type ProfileTemplate,
+  initProfile, PROFILE_TEMPLATES, readProfileManifest, removeLinkProjections, sanitizeProfile, writeProfileBundles, type ProfileTemplate,
 } from '@deepseek-ai/dsh-app-boot'
 
 const PROJECT_NAME = '@deepseek-ai/dsh-desktop-runtime'
@@ -74,7 +75,8 @@ export class DesktopProjectManager {
    * @returns Backup path after the locked profile write, or undefined if the patch was absent.
    */
   async disableAllPlugins(): Promise<string | undefined> {
-    return this.withLock(() => sanitizeProfile('dsh', this.paths.profile, WEB_PROFILE.bundles))
+    // Harness Studio's built-in plugins ship with the app and stay on: recovery removes only third-party bundles.
+    return this.withLock(() => sanitizeProfile('dsh', this.paths.profile, [...WEB_PROFILE.bundles, ...STUDIO_BUNDLED_PLUGINS]))
   }
 
   /**
@@ -86,6 +88,7 @@ export class DesktopProjectManager {
       readDesktopRuntime(this.runtime.dsh)
       migrateProfileSettings(this.paths.profile)
       createPluginProfile(this.paths.profile)
+      ensureBundledPlugins(this.paths.profile)
       removeLinkProjections(this.paths.profile)
     })
   }
@@ -170,7 +173,22 @@ export function createDevelopmentProjectMetadata(projectDir: string, release: De
   writeFileSync(join(projectDir, 'pnpm-workspace.yaml'), workspaceFile(), { mode: 0o600 })
 }
 
-/** Create the first external plugin profile without running a package manager. */
+/** Create the first external plugin profile, with Harness Studio's bundled plugins enabled, without running a package manager. */
 export function createPluginProfile(projectDir: string): void {
-  initProfile(projectDir, WEB_PROFILE.bundles)
+  initProfile(projectDir, [...WEB_PROFILE.bundles, ...STUDIO_BUNDLED_PLUGINS])
+}
+
+/**
+ * Enable every Harness Studio built-in plugin in an existing profile: one created before a plugin was added
+ * to the app (Terminal, Editor), or rewritten by an older recovery, gets the missing ones appended after its
+ * own bundles, which keep their order. The built-ins load from the installation, so the profile's
+ * dependencies stay as they are. A profile already listing them all is not rewritten.
+ * @param projectDir - the Desktop profile directory.
+ */
+export function ensureBundledPlugins(projectDir: string): void {
+  if (!existsSync(join(projectDir, 'package.json'))) return
+  const manifest = readProfileManifest('dsh', projectDir)
+  const bundles = manifest.dsh?.profile?.bundles ?? [...WEB_PROFILE.bundles]
+  const missing = STUDIO_BUNDLED_PLUGINS.filter(name => !bundles.includes(name))
+  if (missing.length > 0 || manifest.dsh?.profile?.bundles === undefined) writeProfileBundles(projectDir, manifest, [...bundles, ...missing])
 }

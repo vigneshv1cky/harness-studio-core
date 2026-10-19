@@ -376,9 +376,13 @@ function profileDependencyNames(manifest: ProfileManifest): string[] {
   return [...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})]
 }
 
-/** Resolve the installation packages that the runtime resolver supplies to every profile. */
+/**
+ * Resolve the installation packages that the runtime resolver supplies to every profile.
+ * `installedBundles` names profile bundles that the installation itself ships beside dsh (Harness Studio's
+ * built-in plugins); they and their dependencies join the installation scope as if dsh declared them.
+ */
 function collectInstallationScopePackages(
-  installAnchor: string, skippedBundles: ReadonlySet<string>,
+  installAnchor: string, skippedBundles: ReadonlySet<string>, installedBundles: readonly string[] = [],
 ): {
   packageNames: ReadonlySet<string>
   packageDirs: ReadonlyMap<string, string>
@@ -401,7 +405,11 @@ function collectInstallationScopePackages(
   }
   // BFS over the resolvable dependency graph; the visited set is the link
   // map itself (first resolution wins, matching Node's own nearest-wins).
-  const queue: { anchor: string; manifest: ProfileManifest }[] = [{ anchor: canonicalAnchor, manifest: appManifest }]
+  const seed: ProfileManifest = installedBundles.length === 0 ? appManifest : {
+    ...appManifest,
+    dependencies: { ...appManifest.dependencies, ...Object.fromEntries(installedBundles.map(name => [name, '*'])) },
+  }
+  const queue: { anchor: string; manifest: ProfileManifest }[] = [{ anchor: canonicalAnchor, manifest: seed }]
   for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
     // Peer dependencies participate: Service Definition packages (dsh-subprocess,
     // dsh-compaction, ...) are peers of their implementations, never plain
@@ -451,8 +459,11 @@ export async function createRuntimeResolution(
   const { installAnchor, profile, home = resolveDshHome() } = options
   const profilesDir = join(home, PROFILES_DIR)
   const manifest = readOptionalProfileManifest(profile)
+  const installedBundles = (profile?.layers ?? [])
+    .filter(layer => packageDirFromAnchor(installAnchor, layer.packageName) === layer.packageDir)
+    .map(layer => layer.packageName)
   const { packageNames, packageDirs, declarers, versions } = collectInstallationScopePackages(
-    installAnchor, new Set(profile?.skippedBundles.map(skipped => skipped.packageName)),
+    installAnchor, new Set(profile?.skippedBundles.map(skipped => skipped.packageName)), installedBundles,
   )
   const profileDeclarers = new Map<string, string>()
   const profileVersions = new Map<string, string | undefined>()

@@ -20,6 +20,7 @@ import {
   DESKTOP_HOST_RUNTIME_FILES,
   DESKTOP_PACKAGES_DIR,
   DESKTOP_PACKAGE_SET_FILE,
+  STUDIO_BUNDLED_PLUGINS,
   parseDesktopCorePackageSet,
   type DesktopCorePackageRecord,
 } from '../src/core-package-set.ts'
@@ -28,7 +29,7 @@ import { tarballFiles } from '../../../scripts/release/tarball.ts'
 import { resolveDesktopTargetBuildPaths } from './desktop-build-paths.mjs'
 
 const DSH_PACKAGE = '@deepseek-ai/dsh'
-const ROOT_PACKAGES = [DSH_PACKAGE, DESKTOP_HOST_PACKAGE] as const
+const ROOT_PACKAGES = [DSH_PACKAGE, DESKTOP_HOST_PACKAGE, ...STUDIO_BUNDLED_PLUGINS] as const
 const APP_ROOT = resolve(import.meta.dirname, '..')
 const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
 
@@ -164,6 +165,7 @@ function main(): void {
     buildPaths.packedDsh,
     buildPaths.packedVendor,
     buildPaths.packedLandlock,
+    join(REPOSITORY_ROOT, 'harness-studio-plugins'),
   ]
   const { values } = parseArgs({
     options: { from: { type: 'string', multiple: true }, out: { type: 'string' } },

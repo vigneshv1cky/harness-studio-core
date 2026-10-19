@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveDesktopPaths } from '../src/paths.ts'
 import { DesktopProjectManager } from '../src/project-manager.ts'
+import { STUDIO_BUNDLED_PLUGINS } from '../src/core-package-set.ts'
 import { readProfilePlugins } from '@deepseek-ai/dsh-app-boot'
 import { runtimeFixture } from './runtime-fixture.ts'
 
@@ -124,6 +125,34 @@ describe('desktop external plugin profile', () => {
     expect(manifest.dsh.profile.bundles).toContain('@deepseek-ai/dsh-web-app')
     await manager.applyRelease()
     expect(readFileSync(patch, 'utf8')).toContain('[]')
+  })
+
+  it('adds built-in plugins an older profile lacks on every launch, keeping its own bundles, and keeps them through recovery', async () => {
+    const { manager } = setup()
+    await manager.applyRelease()
+    seedPlugin(manager)
+    const path = join(manager.paths.profile, 'package.json')
+    const bundles = () => (JSON.parse(readFileSync(path, 'utf8')) as { dsh: { profile: { bundles: string[] } } }).dsh.profile.bundles
+    expect(bundles()).toEqual(expect.arrayContaining([...STUDIO_BUNDLED_PLUGINS, 'plugin']))
+    // A profile made before Terminal and Editor shipped, with a plugin the person added.
+    const older = JSON.parse(readFileSync(path, 'utf8')) as { dependencies: Record<string, string>, dsh: { profile: { bundles: string[] } } }
+    older.dsh.profile.bundles = older.dsh.profile.bundles.filter(name => name !== '@harness-studio/terminal' && name !== '@harness-studio/editor')
+    writeFileSync(path, JSON.stringify(older))
+    await manager.applyRelease()
+    expect(bundles().slice(0, older.dsh.profile.bundles.length)).toEqual(older.dsh.profile.bundles)
+    expect(bundles()).toEqual(expect.arrayContaining([...STUDIO_BUNDLED_PLUGINS, 'plugin']))
+    expect(bundles().filter(name => name === '@harness-studio/terminal')).toHaveLength(1)
+    expect((JSON.parse(readFileSync(path, 'utf8')) as { dependencies: Record<string, string> }).dependencies).toEqual(older.dependencies)
+    // Recovery removes the third-party plugin and keeps the built-ins.
+    await manager.disableAllPlugins()
+    expect(bundles()).not.toContain('plugin')
+    expect(bundles()).toEqual(expect.arrayContaining([...STUDIO_BUNDLED_PLUGINS]))
+    // A profile recovered by an older version, with only the base bundles, gets them back at the next launch.
+    const recovered = JSON.parse(readFileSync(path, 'utf8')) as { dsh: { profile: { bundles: string[] } } }
+    recovered.dsh.profile.bundles = recovered.dsh.profile.bundles.filter(name => !name.startsWith('@harness-studio/'))
+    writeFileSync(path, JSON.stringify(recovered))
+    await manager.applyRelease()
+    expect(bundles()).toEqual([...recovered.dsh.profile.bundles, ...STUDIO_BUNDLED_PLUGINS])
   })
 
   it('needs no runtime or package manifest when no plugins have been installed', async () => {

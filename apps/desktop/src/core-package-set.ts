@@ -13,6 +13,12 @@ export const DESKTOP_PACKAGES_DIR = 'desktop-packages'
 /** Private package installed beside dsh to boot the Desktop Host process. */
 export const DESKTOP_HOST_PACKAGE = '@deepseek-ai/dsh-desktop-host'
 
+/**
+ * Harness Studio plugins shipped inside the application and enabled in a new Desktop profile.
+ * Their tarballs are read from `harness-studio-plugins/` at the repository root when the package set is prepared.
+ */
+export const STUDIO_BUNDLED_PLUGINS = ['@harness-studio/devpreview', '@harness-studio/connectors', '@harness-studio/compact', '@harness-studio/sessions', '@harness-studio/remember', '@harness-studio/hooks', '@harness-studio/undo', '@harness-studio/watch', '@harness-studio/terminal', '@harness-studio/editor'] as const
+
 /** Package-relative Desktop Host files required before a profile can boot. */
 export const DESKTOP_HOST_RUNTIME_FILES = [
   'lib/index.js',
