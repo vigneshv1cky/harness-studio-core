@@ -22,6 +22,8 @@ import { createInboxStub, provideWorkingDirectoryFixture } from '@deepseek-ai/ds
 import { apply, Config } from '../src/index.ts'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
+import CommandRuntime from '@deepseek-ai/dsh-commands'
+import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import { internals } from '../src/runner-internals.ts'
 
 const originalInternals = { ...internals }
@@ -54,6 +56,8 @@ interface BenchOptions {
   terminal?: boolean
   /** Lines typed at each approval question, in order; undefined waits until the question is withdrawn. */
   approvalAnswers?: (string | undefined)[]
+  /** Receives the chat's Ctrl-C listener, so a test can press Ctrl-C. */
+  onInterrupt?: (listener: () => void) => void
   observe?: () => Promise<ObservationStub>
   /** Leave the query service unmounted to exercise the fail-loud path. */
   omitSessionQuery?: boolean
@@ -225,7 +229,7 @@ async function bench(script: Script, options: BenchOptions = {}): Promise<{
         internals.openChat = () => ({
           async* [Symbol.asyncIterator]() { yield* lines },
           prompt: () => { order.push('prompt') },
-          onInterrupt: () => {},
+          onInterrupt: (listener: () => void) => { options.onInterrupt?.(listener) },
           close: () => {},
           ask: (question: string, signal?: AbortSignal) => {
             order.push(`ask ${question}`)
@@ -268,7 +272,9 @@ describe('headless runner', () => {
     const result = await test.run()
     expect(result.code).toBe(0)
     expect(result.out).toBe('answer: first question\n\nanswer: second question\n\n')
-    expect(result.err).toMatch(/^Chat with test-model in .+\. Enter sends; Ctrl-C stops a reply; Ctrl-D or \/exit quits\.\n/)
+    expect(result.err).toMatch(
+      /^Chat with test-model in .+\. Enter sends; \/help lists commands; Ctrl-C stops a reply; Ctrl-D or \/exit quits\.\n/,
+    )
     expect(result.err).toMatch(/\nSession session-[0-9a-f-]+; continue it with --session-id session-[0-9a-f-]+\n$/)
     expect(result.order).toEqual(['prompt', 'flush', 'prompt', 'prompt', 'flush', 'prompt', 'flush', 'exit'])
     expect(turn).toBe(2)
@@ -414,6 +420,63 @@ describe('headless runner', () => {
     expect(result.err).toContain('\n! bash: it needs your approval\n  rejected\n')
     expect(result.err).toContain('  withdrawn\n')
     expect(result.order.filter(entry => entry.startsWith('ask '))).toEqual(Array(4).fill('ask Allow once? [y/N] '))
+    await test.ctx.fiber.dispose()
+  })
+
+  it('runs slash commands without sending them, starts a new session on /clear, and prints a status line', async () => {
+    const agentsSeen: string[] = []
+    let interrupt: (() => void) | undefined
+    let turn = 0
+    const test = await bench({
+      async afterPrompt(session, message, agent) {
+        await Promise.resolve()
+        agentsSeen.push(agent.id)
+        session.append('turn/start', { turn })
+        session.append('step/start', { turn, step: 1 })
+        session.append('user/message', message, { surfaceOp: 'append' })
+        session.append('assistant/message', {
+          stream: [], turn, step: 1, usage: { inputTokens: 1200, outputTokens: 34, cacheReadTokens: 800 },
+          message: createAssistantMessage({ content: [{ type: 'text', text: 'ok' }], source: { provider: 'test-provider', model: 'test-model' } }),
+        }, { surfaceOp: 'append' })
+        session.append('step/end', { turn, step: 1 })
+        session.append('turn/end', { turn: turn++, reason: { kind: 'completed' } })
+      },
+    }, {
+      chatLines: [
+        '/', '/model', '/nope', '/echo hi', '/fail', '/boom', '/quiet', '/slow', '/echo', 'hello', '/clear', 'again', '/exit',
+      ],
+      onInterrupt: (listener) => { interrupt = listener },
+    })
+    await test.ctx.plugin(CommandRuntime)
+    await test.ctx.plugin(TokenMeter)
+    const register = (name: string, handler: Parameters<typeof test.ctx.commands.register>[0]['handler'], hint?: string) =>
+      test.ctx.commands.register({ name, description: `the ${name} command`, ...hint === undefined ? {} : { input: { hint } }, handler })
+    register('echo', ({ rawInput }) => rawInput.trim() === '' ? { kind: 'error', text: 'say something' } : { kind: 'success', text: `echo:${rawInput}\u001b[2J` }, '<text>')
+    register('fail', () => ({ kind: 'error', text: 'bad input' }))
+    register('boom', () => { throw new Error('kaboom') })
+    register('quiet', () => ({ kind: 'success' }))
+    // The registry stops waiting on Ctrl-C; the handler settles quietly, as real handlers do.
+    register('slow', ({ signal }) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => { resolve({ kind: 'error', text: 'aborted' }) })
+      interrupt?.()
+    }))
+    const result = await test.run()
+    expect(turn).toBe(2)
+    expect(new Set(agentsSeen).size).toBe(2)
+    expect(result.err).toContain('  /clear ')
+    expect(result.err).toContain('  /echo <text>  the echo command\n')
+    expect(result.err).toContain('Model: test-provider/test-model. The app\'s default model applies to the next chat.\n')
+    expect(result.err).toContain('Unknown command /nope; /help lists the commands. Nothing was sent.\n')
+    expect(result.err).toContain('echo: hi\\x1b[2J\n')
+    expect(result.err).toContain('/fail: bad input\n')
+    expect(result.err).toContain('/boom failed: kaboom\n')
+    expect(result.err).toContain('/quiet done\n')
+    expect(result.err).toContain('/slow stopped\n')
+    expect(result.err).toContain('/echo: say something\n')
+    expect(result.err).toContain(`New session. Continue the previous one with --session-id ${agentsSeen[0] ?? ''}\n`)
+    expect(result.err).toContain('test-model · 2.0K in / 34 out\n')
+    expect(result.err).toMatch(new RegExp(`\\nSession ${agentsSeen[1] ?? ''}; continue it with --session-id`))
+    interrupt?.()
     await test.ctx.fiber.dispose()
   })
 

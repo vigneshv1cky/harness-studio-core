@@ -42,6 +42,18 @@
       "path": "../../interaction/user-approval"
     },
     {
+      "path": "../../interaction/commands"
+    },
+    {
+      "path": "../../interaction/permission-presets"
+    },
+    {
+      "path": "../../session/session-projection"
+    },
+    {
+      "path": "../../llm/token-meter"
+    },
+    {
       "path": "../../subagent/subagent"
     }
   ]

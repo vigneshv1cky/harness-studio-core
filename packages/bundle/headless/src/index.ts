@@ -31,9 +31,14 @@ import type {} from '@deepseek-ai/dsh-cmdline'
 import type {} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-subagent'
 import type {} from '@deepseek-ai/dsh-user-approval'
+import type {} from '@deepseek-ai/dsh-commands'
+import type {} from '@deepseek-ai/dsh-permission-presets'
+import type {} from '@deepseek-ai/dsh-session-projection'
+import type {} from '@deepseek-ai/dsh-token-meter'
 import { internals } from './runner-internals.ts'
 import { projectJsonRun, boundJsonLine } from './json-stream.ts'
 import { escapeTerminal, streamChat } from './chat-stream.ts'
+import { chatHelp, statusLine } from './chat-commands.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'headless-runner'
@@ -417,7 +422,9 @@ async function run(ctx: Context, config: Config, io: HeadlessIo): Promise<void> 
  * Harness Studio: a chat in the terminal. Each line typed is one turn in the same Session. The answer streams to
  * stdout as it is written, reasoning to stderr, and each tool call and result takes one stderr line (chat-stream.ts);
  * when stdout is not a terminal the answer prints when the turn ends. A tool call that needs approval asks
- * `Allow once? [y/N]` on the input line. Ctrl-C stops the reply in progress, or quits at the prompt; Ctrl-D
+ * `Allow once? [y/N]` on the input line. A line starting with `/` runs a command (chat-commands.ts and Harness's
+ * command registry) and is never sent to the model; a status line follows each reply. Ctrl-C stops the reply or
+ * command in progress, or quits at the prompt; Ctrl-D
  * or `/exit` quits. The Session id is printed at the end so `--session-id` can continue it.
  * @param ctx - the runner's context.
  * @param config - the runner config; `sessionId` continues an existing Session.
@@ -437,21 +444,24 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
   const sessionId = brandString<SessionId>(config.sessionId ?? `session-${randomUUID()}`)
   const fs = ctx.get('fs')
   const cwd = fs === undefined ? process.cwd() : fs.processPath(await fs.resolve('.'))
-  const agent = config.sessionId === undefined
+  let agent = config.sessionId === undefined
     ? (await agents.create({ sessionId, meta: { cwd }, agentOptions, setup })).agent
     : await resolveAgent(ctx, agents, sessionId, agentOptions, setup, cwd)
   await agent.whenIdle()
   const subagents = ctx.get('subagents')
+  const commands = ctx.get('commands')
   const input = internals.openChat()
   let replying = false
+  let command: AbortController | undefined
   input.onInterrupt(() => {
     if (replying) agent.cancel({ kind: 'user' })
+    else if (command !== undefined) command.abort()
     else input.close()
   })
   // Approvals for this chat's own agent are asked on the input line. Helper agents run with the "never" policy, and
   // the "never" policy rejects before any answerer is asked, so neither reaches this prompt.
-  const stopApprovals = agent.ctx.on('approval/request', async (request, next) => {
-    if (request.agent !== agent) return next()
+  const answerApprovals = (owner: Agent): (() => void) => owner.ctx.on('approval/request', async (request, next) => {
+    if (request.agent !== owner) return next()
     const reason = request.displayReason?.en ?? request.reason ?? 'it needs your approval'
     io.stderr.write(`\n! ${escapeTerminal(request.toolName)}: ${escapeTerminal(reason)}\n`)
     const line = await input.ask('Allow once? [y/N] ', request.signal)
@@ -463,12 +473,71 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
     io.stderr.write(allowed ? '  allowed once\n' : '  rejected\n')
     return allowed ? 'allowed-once' : 'rejected'
   })
-  io.stderr.write(`Chat with ${selection.model} in ${cwd}. Enter sends; Ctrl-C stops a reply; Ctrl-D or /exit quits.\n`)
+  let stopApprovals = answerApprovals(agent)
+  const status = (): string => {
+    const projections = ctx.get('sessionProjections')
+    const usage = projections?.stateOf(agent.session, 'tokenUsage')?.last?.buckets
+    const pressure = projections?.stateOf(agent.session, 'contextPressure')
+    return statusLine({
+      model: selection.model,
+      lastRequest: usage === undefined ? undefined : {
+        input: usage.uncachedInputTokens + usage.cacheReadTokens + usage.cacheWriteTokens,
+        output: usage.outputTokens,
+      },
+      context: pressure?.pressureTokens === undefined || pressure.contextWindow === undefined
+        ? undefined
+        : { used: pressure.pressureTokens, window: pressure.contextWindow },
+      permission: ctx.get('permissionPresets')?.current(agent.session),
+    })
+  }
+  /** A line starting with `/`: the chat's own commands, then Harness's registry. Never sent to the model. */
+  const runCommand = async (line: string): Promise<void> => {
+    const name = /^\/(\S*)/.exec(line)?.[1] ?? ''
+    if (name === '' || name === 'help') {
+      io.stderr.write(chatHelp(commands?.list(agent) ?? []))
+      return
+    }
+    if (name === 'model') {
+      io.stderr.write(`Model: ${selection.provider}/${selection.model}. The app's default model applies to the next chat.\n`)
+      return
+    }
+    if (name === 'clear') {
+      stopApprovals()
+      await sessions.flush(agent.session)
+      const previous = agent.id
+      agent = (await agents.create({ sessionId: brandString<SessionId>(`session-${randomUUID()}`), meta: { cwd }, agentOptions, setup })).agent
+      await agent.whenIdle()
+      stopApprovals = answerApprovals(agent)
+      io.stderr.write(`New session. Continue the previous one with --session-id ${previous}\n`)
+      return
+    }
+    if (commands?.find(agent, name) === undefined) {
+      io.stderr.write(`Unknown command /${escapeTerminal(name)}; /help lists the commands. Nothing was sent.\n`)
+      return
+    }
+    command = new AbortController()
+    try {
+      const execution = await commands.execute(agent, line, [], command.signal)
+      if (execution === undefined) io.stderr.write(`/${name} could not read that input; /help shows how to use it.\n`)
+      else if (execution.result.kind === 'error') io.stderr.write(`/${name}: ${escapeTerminal(execution.result.text)}\n`)
+      else io.stderr.write(`${escapeTerminal(execution.result.text ?? `/${name} done`)}\n`)
+    } catch (error) {
+      io.stderr.write(command.signal.aborted ? `/${name} stopped\n` : `/${name} failed: ${escapeTerminal(error instanceof Error ? error.message : String(error))}\n`)
+    } finally {
+      command = undefined
+    }
+  }
+  io.stderr.write(`Chat with ${selection.model} in ${cwd}. Enter sends; /help lists commands; Ctrl-C stops a reply; Ctrl-D or /exit quits.\n`)
   input.prompt()
   for await (const line of input) {
     const text = line.trim()
     if (text === '/exit' || text === '/quit') break
     if (text === '') {
+      input.prompt()
+      continue
+    }
+    if (text.startsWith('/')) {
+      await runCommand(text)
       input.prompt()
       continue
     }
@@ -493,12 +562,13 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
     else if (outcome.text !== '') io.stdout.write(`${live ? escapeTerminal(outcome.text) : outcome.text}\n\n`)
     if (outcome.reason?.kind === 'error') io.stderr.write(`dsh: ${outcome.reason.error.code}: ${outcome.reason.error.message}\n`)
     else if (outcome.reason?.kind === 'aborted') io.stderr.write('dsh: stopped\n')
+    io.stderr.write(status())
     input.prompt()
   }
   stopApprovals()
   input.close()
   await sessions.flush(agent.session)
-  io.stderr.write(`\nSession ${sessionId}; continue it with --session-id ${sessionId}\n`)
+  io.stderr.write(`\nSession ${agent.id}; continue it with --session-id ${agent.id}\n`)
   io.exit(0)
 }
 
