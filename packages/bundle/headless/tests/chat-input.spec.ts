@@ -13,7 +13,8 @@ function fakeTerminal() {
     on: (event: 'line' | 'close' | 'SIGINT', listener: (line: string) => void) => emitter.on(event, listener),
     setPrompt: (next: string) => { prompt = next },
     prompt: () => { shown.push(prompt) },
-    clearLine: () => { shown.push('(cleared)') },
+    // Clearing redraws the input line with the current prompt, as readline does.
+    clearLine: () => { shown.push(`(cleared) ${prompt}`) },
     close: () => { emitter.emit('close') },
   }
   return { source, shown, type: (line: string) => { emitter.emit('line', line) }, interrupt: () => { emitter.emit('SIGINT') } }
@@ -40,7 +41,7 @@ describe('terminal chat input', () => {
     const input = createChatInput(terminal.source)
     terminal.type('y')
     const answer = input.ask('Allow once? [y/N] ')
-    expect(terminal.shown).toEqual(['(cleared)', 'Allow once? [y/N] '])
+    expect(terminal.shown).toEqual(['(cleared) Allow once? [y/N] '])
     terminal.type('no thanks')
     expect(await answer).toBe('no thanks')
     input.prompt()

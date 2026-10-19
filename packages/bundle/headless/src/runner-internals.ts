@@ -31,7 +31,7 @@ export interface ChatLineSource {
   on(event: 'close' | 'SIGINT', listener: () => void): unknown
   setPrompt(prompt: string): void
   prompt(): void
-  /** Clear the half-typed line (Ctrl-U). */
+  /** Clear the half-typed line (Ctrl-U) and redraw the input line with the current prompt. */
   clearLine(): void
   close(): void
 }
@@ -82,9 +82,9 @@ export function createChatInput(source: ChatLineSource, prompt = '> '): ChatInpu
     close: () => { source.close() },
     ask(question, signal) {
       if (closed || signal?.aborted === true) return Promise.resolve(undefined)
-      source.clearLine()
+      // Clearing redraws the input line with the current prompt, so the question set first is what it shows.
       source.setPrompt(question)
-      source.prompt()
+      source.clearLine()
       return new Promise((resolve) => {
         const finish = (line: string | undefined): void => {
           signal?.removeEventListener('abort', withdraw)
