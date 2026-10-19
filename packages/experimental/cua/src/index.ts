@@ -34,6 +34,10 @@ export interface CuaConfig {
     /** Unbranded digest at the profile configuration boundary; admitted by the Config schema. */
     id: string
   }>>
+  /** Applications computer use never controls, by display name or `.app` bundle name. */
+  refusedApps: Volatile<string[]>
+  /** Applications that can be approved only for the current task (no "Always allow"), such as browsers. */
+  taskOnlyApps: Volatile<string[]>
   /** Absolute native helper override; omission prepares the package-owned executable. */
   helperPath?: string
   /** Maximum time in milliseconds for native component preparation. */
@@ -70,12 +74,31 @@ export interface CuaConfig {
   maxDepth: number
 }
 
+/**
+ * Applications refused by default: terminals and script runners (they run any command outside the sandbox),
+ * system settings, password stores, and Harness Studio itself (it holds the approval prompts).
+ */
+export const DEFAULT_REFUSED_APPS = [
+  'Terminal', 'iTerm', 'iTerm2', 'Warp', 'Ghostty', 'Alacritty', 'kitty', 'WezTerm', 'Hyper', 'Tabby',
+  'Script Editor', 'Automator', 'Shortcuts',
+  'System Settings', 'System Preferences', 'Keychain Access', 'Passwords',
+  '1Password', '1Password 7', 'Bitwarden', 'Dashlane', 'LastPass', 'KeePassXC', 'Enpass', 'Proton Pass',
+  'Harness Studio', 'Harness Studio Dev',
+] as const
+/** Browsers: approval lasts only for the task, since a browser reaches every site the user is signed in to. */
+export const DEFAULT_TASK_ONLY_APPS = [
+  'Safari', 'Google Chrome', 'Chromium', 'Firefox', 'Arc', 'Microsoft Edge', 'Brave Browser', 'Opera', 'Vivaldi',
+  'DuckDuckGo', 'Orion', 'Zen', 'Zen Browser',
+] as const
+
 /** Validated host configuration; no driver is downloaded at runtime. */
 export const CuaConfig = Schema.object({
   allowedApps: Schema.array(Schema.object({
     id: Schema.string().pattern(/^[a-f0-9]{64}$/).required(),
     name: Schema.string().required(), executablePath: Schema.string().min(1).required(),
   })).default([]).volatile(),
+  refusedApps: Schema.array(Schema.string()).default([...DEFAULT_REFUSED_APPS]).volatile(),
+  taskOnlyApps: Schema.array(Schema.string()).default([...DEFAULT_TASK_ONLY_APPS]).volatile(),
   helperPath: Schema.string(),
   buildTimeoutMs: Schema.number().step(1).min(1).max(2 ** 31 - 1).default(300_000),
   timeoutMs: Schema.number().step(1).min(1).max(2 ** 31 - 1).default(30_000),
@@ -159,6 +182,8 @@ export function installCua(ctx: Context, config: CuaConfig, backend: CuaBackend)
   ctx.inject(['settings'], scope => scope.effect(() => scope.settings.configure({ auto: false }, ctx.fiber)))
   const access = new ApplicationAccess(ctx, {
     grants: () => config.allowedApps.get().map(grant => ({ ...grant, id: grant.id as CuaApplicationId })),
+    refused: () => config.refusedApps.get(),
+    taskOnly: () => config.taskOnlyApps.get(),
     get save() {
       const settings = ctx.get('settings')
       if (entryId === undefined || settings === undefined) return undefined

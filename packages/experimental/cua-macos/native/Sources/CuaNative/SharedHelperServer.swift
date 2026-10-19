@@ -67,6 +67,12 @@ final class NativeSignals {
     deinit { sources.forEach { $0.cancel() } }
 }
 
+/** Weak holder for the server, passed to the background accept loop and read back on the main actor. */
+final class WeakSharedHelperServer: @unchecked Sendable {
+    weak var value: SharedHelperServer?
+    init(_ value: SharedHelperServer) { self.value = value }
+}
+
 @MainActor final class SharedHelperServer {
     private let options: SharedHelperOptions
     private let versionLock: SharedHelperLock
@@ -113,7 +119,9 @@ final class NativeSignals {
         try FileHandle.standardOutput.write(contentsOf: data + Data([10]))
         try FileHandle.standardOutput.close()
         let listener = self.listener
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        // A weak reference the accept loop can carry across threads; it is only read on the main actor.
+        let server = WeakSharedHelperServer(self)
+        DispatchQueue.global(qos: .utility).async {
             while !lifetime.isStopping {
                 let descriptor = accept(listener.descriptor, nil, nil)
                 if descriptor < 0 && errno == EINTR { continue }
@@ -128,7 +136,7 @@ final class NativeSignals {
                 let id = UUID()
                 let cancellation = CancellationLatch()
                 guard lifetime.add(id, channel: channel, cancellation: cancellation) else { channel.shutdown(); return }
-                Task { @MainActor in self?.admit(id, channel: channel, cancellation: cancellation) }
+                Task { @MainActor in server.value?.admit(id, channel: channel, cancellation: cancellation) }
             }
         }
     }

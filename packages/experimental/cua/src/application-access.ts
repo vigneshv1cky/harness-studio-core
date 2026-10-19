@@ -16,6 +16,24 @@ export const ApplicationAuthorizationResult = z.object({
 export interface AccessOptions {
   grants: () => readonly CuaApplicationGrant[]
   save?: ((grants: readonly CuaApplicationGrant[]) => Promise<void>) | undefined
+  /** Applications never controlled, by display name or `.app` bundle name, compared without case. */
+  refused?: () => readonly string[]
+  /** Applications approved only for the current task: "Always allow" is not offered for them. */
+  taskOnly?: () => readonly string[]
+}
+
+/**
+ * Whether an application matches a list entry by display name or by the name of the `.app` bundle holding its
+ * executable, ignoring case.
+ * @param identity Native application identity.
+ * @param list Application names.
+ * @returns whether any entry names the application.
+ */
+export function namesApplication(identity: { name: string, executablePath: string }, list: readonly string[]): boolean {
+  const names = new Set(list.map(entry => entry.trim().toLowerCase()).filter(Boolean))
+  if (names.size === 0) return false
+  const bundle = /\/([^/]+)\.app(?:\/|$)/i.exec(identity.executablePath)?.[1]
+  return names.has(identity.name.trim().toLowerCase()) || (bundle !== undefined && names.has(bundle.toLowerCase()))
 }
 interface Selection {
   identity: CuaApplicationGrant
@@ -32,6 +50,20 @@ interface ActiveOperation {
   identity: CuaApplicationGrant
   controller: AbortController
   done: PromiseWithResolvers<void>
+}
+
+/**
+ * The approval card's explanation: what the agent can do, for how long, and where the application lives
+ * (its `.app` bundle, shown without the system's internal volume prefix).
+ * @param identity Native application identity.
+ * @param canKeep Whether "Always allow" is offered.
+ * @returns plain text for the card.
+ */
+function accessDetail(identity: { name: string, executablePath: string }, canKeep: boolean): string {
+  const bundle = /^(.*?\.app)(?:\/|$)/i.exec(identity.executablePath)?.[1] ?? identity.executablePath
+  const where = bundle.replace(/^\/System\/Volumes\/Preboot\/Cryptexes\/App/, '')
+  const lasting = canKeep ? ' Always allow keeps it for later tasks too.' : ''
+  return `It can open ${identity.name} if it is not running, see its windows, and click and type in it. Allow for this task lasts until this task ends.${lasting}\n\n${where}`
 }
 
 /** Owns application consent and cancels operations when saved access is removed. */
@@ -76,6 +108,10 @@ export class ApplicationAccess {
     identity: CuaApplicationGrant & { persistable: boolean }, signal: AbortSignal): Promise<void> {
     await this.withOperation(agent, client, identity, signal, signal => this.selectInOrder(agent, identity.id, async () => {
       signal.throwIfAborted()
+      // Refused applications stay refused even with a saved grant, before any question or launch.
+      if (namesApplication(identity, this.options.refused?.() ?? [])) {
+        throw new NativeError('APP_REFUSED', `${identity.name} is on the list of applications computer use may not control. Do not retry or use another tool to bypass this; ask the user to do this step themselves.`)
+      }
       const existing = this.clients.get(client)?.handles.get(handle)
       if (!client.disposed && existing && this.permitted(existing)) return
       const saved = identity.persistable && this.options.grants().some(grant => grant.id === identity.id)
@@ -85,13 +121,14 @@ export class ApplicationAccess {
       if (!saved) {
         const questions = this.ctx.get('userQuestions')
         if (!questions) throw new NativeError('APP_APPROVAL_UNAVAILABLE', 'No human answerer is available for application access')
-        const options = [{ label: 'Allow for this task' }, { label: 'Deny' }]
-        if (identity.persistable && this.options.save) options.push({ label: 'Always allow' })
+        const taskOnly = namesApplication(identity, this.options.taskOnly?.() ?? [])
+        const options = [{ label: 'Allow for this task' },
+          ...(identity.persistable && this.options.save && !taskOnly ? [{ label: 'Always allow' }] : []), { label: 'Deny' }]
         let result: AskUserQuestionAnswer
         try {
           result = await questions.ask({ agent, signal, questions: [{ id: 'cua-app-access',
-            question: `Allow Computer Use to launch if needed, read, capture, and control ${identity.name}?`,
-            detail: `Application: ${identity.executablePath}\nTask access applies to the selected application instance, including its launch if needed. macOS permissions and approval of sensitive actions remain separate. Saved access can be revoked by removing its allowedApps entry from this provider configuration. Task access ends with the task.`, options }] })
+            question: `Let the agent use ${identity.name}?`,
+            detail: accessDetail(identity, options.some(option => option.label === 'Always allow')), options }] })
         } catch (error) {
           if (error instanceof UserQuestionError && error.code === 'ASK_CANCELLED') {
             this.invalidate(identity.id, agent)
@@ -106,7 +143,7 @@ export class ApplicationAccess {
         const answer = result.answers.find(answer => answer.id === 'cua-app-access')
         const chosen = answer && !answer.custom?.trim() && answer.selected.length === 1 ? answer.selected[0] : undefined
         if (chosen === 'Allow for this task') scope = 'task'
-        else if (chosen === 'Always allow' && identity.persistable && this.options.save) {
+        else if (chosen === 'Always allow' && identity.persistable && this.options.save && !taskOnly) {
           const { persistable: _persistable, ...grant } = identity
           await this.persist((grants) => {
             signal.throwIfAborted()

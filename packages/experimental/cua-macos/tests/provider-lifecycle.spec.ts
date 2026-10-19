@@ -57,7 +57,7 @@ vi.mock('@deepseek-ai/dsh-cua/native-client', async importOriginal => ({
 const config = {
   helperPath: resolve('fixture-helper'), buildTimeoutMs: 300_000, timeoutMs: 10_000, connectTimeoutMs: 5000, screenshotTimeoutMs: 5000, axTimeoutMs: 3000, maxRequestBytes: 1024, maxResponseBytes: 4096, maxClipboardBytes: 8192, pasteReadTimeoutMs: 1000, maxAppMatches: 20,
   graceMs: 10, textEventIntervalMs: 8, maxElements: 64, maxDepth: 8, dragDurationMs: 200, dragSteps: 10,
-} satisfies Omit<NativeProvider.Config, 'allowedApps'>
+} satisfies Omit<NativeProvider.Config, 'allowedApps' | 'refusedApps' | 'taskOnlyApps'>
 
 const { helperPath: _helperPath, ...automaticConfig } = config
 
@@ -102,7 +102,7 @@ async function selectApplication(f: Awaited<ReturnType<typeof setup>>) {
 it('rejects a relative helper path before publishing computer-use operations', async () => {
   const ctx = new Context()
   onTestFinished(() => ctx.fiber.dispose())
-  await expect(NativeProvider.apply(ctx, { ...config, allowedApps: { get: () => [] }, helperPath: 'relative-helper' })).rejects.toThrow('helperPath must be absolute')
+  await expect(NativeProvider.apply(ctx, { ...config, allowedApps: { get: () => [] }, refusedApps: { get: () => [] }, taskOnlyApps: { get: () => [] }, helperPath: 'relative-helper' })).rejects.toThrow('helperPath must be absolute')
 })
 
 it.each(['Allow for this task', 'Deny'])('obtains %s before a stopped application can launch', async (choice) => {
@@ -547,7 +547,7 @@ it('prepares the selected native component before registering CUA and creates no
   const f = await setup()
   await f.provider.dispose()
   native.prepare.mockReset().mockResolvedValue(resolve('prepared-helper'))
-  await NativeProvider.apply(f.ctx, { ...automaticConfig, allowedApps: { get: () => [] } })
+  await NativeProvider.apply(f.ctx, { ...automaticConfig, allowedApps: { get: () => [] }, refusedApps: { get: () => [] }, taskOnlyApps: { get: () => [] } })
   expect(native.prepare).toHaveBeenCalledTimes(1)
   expect(native.instances).toHaveLength(0)
   await f.execute()
@@ -596,7 +596,7 @@ it('waits for canceled preparation and never publishes its late success', async 
   const ready = Promise.withResolvers<string>()
   onTestFinished(() => { ready.resolve(resolve('late-helper')) })
   native.prepare.mockReset().mockReturnValue(ready.promise)
-  const starting = Promise.resolve(NativeProvider.apply(f.ctx, { ...automaticConfig, allowedApps: { get: () => [] } }))
+  const starting = Promise.resolve(NativeProvider.apply(f.ctx, { ...automaticConfig, allowedApps: { get: () => [] }, refusedApps: { get: () => [] }, taskOnlyApps: { get: () => [] } }))
   const failed = expect(starting).rejects.toThrow()
   const signal = native.prepare.mock.calls[0]![0].signal
   const aborted = new Promise<void>((resolve) => {
@@ -619,7 +619,7 @@ it('rejects an unsupported native host before starting preparation', async () =>
   await f.provider.dispose()
   native.architecture.mockImplementationOnce(() => { throw new Error('unsupported host') })
   native.prepare.mockReset()
-  await expect(NativeProvider.apply(f.ctx, { ...automaticConfig, allowedApps: { get: () => [] } })).rejects.toThrow('unsupported host')
+  await expect(NativeProvider.apply(f.ctx, { ...automaticConfig, allowedApps: { get: () => [] }, refusedApps: { get: () => [] }, taskOnlyApps: { get: () => [] } })).rejects.toThrow('unsupported host')
   expect(native.prepare).not.toHaveBeenCalled()
 })
 

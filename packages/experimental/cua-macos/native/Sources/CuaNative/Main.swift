@@ -7,6 +7,13 @@ import Darwin
     @MainActor static func main() {
         do {
             let arguments = Array(CommandLine.arguments.dropFirst())
+            // Report the two macOS permissions this helper needs, without opening a system dialog.
+            if arguments.first == "--permissions" {
+                let report = ["accessibility": AXIsProcessTrusted(), "screenRecording": CGPreflightScreenCaptureAccess()]
+                let data = try JSONEncoder().encode(report)
+                try FileHandle.standardOutput.write(contentsOf: data + Data([10]))
+                return
+            }
             if arguments.first == "--ensure-shared" {
                 try SharedHelperLauncher.ensure(SharedHelperOptions(arguments: arguments))
                 return

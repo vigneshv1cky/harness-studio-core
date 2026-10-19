@@ -5,7 +5,7 @@ import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deep
 import { SessionId } from '@deepseek-ai/dsh-session'
 import UserQuestions, { UserQuestionError, type AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
 import { expect, it, onTestFinished, vi } from 'vitest'
-import { ApplicationAuthorizationResult, ApplicationAccess } from '../src/application-access.ts'
+import { ApplicationAuthorizationResult, ApplicationAccess, namesApplication } from '../src/application-access.ts'
 import type { CuaApplicationGrant } from '../src/application-types.ts'
 import type { CuaAppHandle } from '../src/types.ts'
 import { NativeClient } from '../src/native-client.ts'
@@ -36,7 +36,7 @@ const identity = ApplicationAuthorizationResult.parse({ id: 'a'.repeat(64), name
 const handle = 'fixture-app' as CuaAppHandle
 const signal = new AbortController().signal
 
-async function setup(choice = 'Allow for this task', options: { writable?: boolean; questions?: boolean; initial?: readonly CuaApplicationGrant[] } = {}) {
+async function setup(choice = 'Allow for this task', options: { writable?: boolean; questions?: boolean; initial?: readonly CuaApplicationGrant[]; refused?: string[]; taskOnly?: string[] } = {}) {
   native.instances.length = 0
   const ctx = new Context()
   onTestFinished(() => ctx.fiber.dispose())
@@ -44,12 +44,13 @@ async function setup(choice = 'Allow for this task', options: { writable?: boole
   await mountAgentLoopTestHarness(ctx)
   if (options.questions !== false) await ctx.plugin(UserQuestions)
   const owner = await ctx.agents.create({ sessionId: SessionId('cua-access-test') })
-  const answer = vi.fn<() => Promise<AskUserQuestionAnswer>>(async () => ({ answers: [{ id: 'cua-app-access', selected: [choice] }] }))
+  const answer = vi.fn<(request: unknown) => Promise<AskUserQuestionAnswer>>(async () => ({ answers: [{ id: 'cua-app-access', selected: [choice] }] }))
   ctx.on('user-questions/request', answer)
   let grants: readonly CuaApplicationGrant[] = options.initial ?? []
   const save = vi.fn(async (next: readonly CuaApplicationGrant[]) => { grants = next })
   let writable = options.writable !== false
-  const access = new ApplicationAccess(ctx, { grants: () => grants, get save() { return writable ? save : undefined } })
+  const access = new ApplicationAccess(ctx, { grants: () => grants, get save() { return writable ? save : undefined },
+    refused: () => options.refused ?? [], taskOnly: () => options.taskOnly ?? [] })
   const client = new NativeClient(ctx, nativeConfig, unusedConnector)
   return { ctx, owner, agent: owner.agent, answer, save, access, client, grants: () => grants,
     setWritable(value: boolean) { writable = value },
@@ -316,4 +317,31 @@ it('keeps an active task operation running when a different task denies the same
     release.resolve(null)
     await expect(pending).resolves.toBeNull()
   } finally { release.resolve(null); await pending }
+})
+
+it('matches applications by display name or .app bundle name, ignoring case', () => {
+  expect(namesApplication(identity, ['test APPLICATION'])).toBe(true)
+  expect(namesApplication(identity, ['fixture'])).toBe(true)
+  expect(namesApplication(identity, ['Fixture Helper', ''])).toBe(false)
+})
+
+it('refuses a listed application before asking, even with a saved grant', async () => {
+  const { persistable: _p, ...grant } = identity
+  const f = await setup('Allow for this task', { refused: ['Fixture'], initial: [grant] })
+  await expect(f.access.select(f.agent, f.client, handle, identity, signal)).rejects.toThrow('APP_REFUSED')
+  expect(f.answer).not.toHaveBeenCalled()
+})
+
+it('offers Always allow before Deny, and never for a task-only application', async () => {
+  const asked: string[][] = []
+  const normal = await setup('Allow for this task')
+  normal.answer.mockImplementation(async (request: any) => { asked.push(request.questions[0].options.map((o: { label: string }) => o.label)); return { answers: [{ id: 'cua-app-access', selected: ['Allow for this task'] }] } })
+  await normal.access.select(normal.agent, normal.client, handle, identity, signal)
+  expect(asked[0]).toEqual(['Allow for this task', 'Always allow', 'Deny'])
+
+  const browser = await setup('Always allow', { taskOnly: ['Test application'] })
+  browser.answer.mockImplementation(async (request: any) => { asked.push(request.questions[0].options.map((o: { label: string }) => o.label)); return { answers: [{ id: 'cua-app-access', selected: ['Always allow'] }] } })
+  await expect(browser.access.select(browser.agent, browser.client, handle, identity, signal)).rejects.toThrow('APP_ACCESS_DENIED')
+  expect(asked[1]).toEqual(['Allow for this task', 'Deny'])
+  expect(browser.save).not.toHaveBeenCalled()
 })
