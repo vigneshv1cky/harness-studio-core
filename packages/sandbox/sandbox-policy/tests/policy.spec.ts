@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SESSION_FORMAT_VERSION, Session, SessionId } from '@deepseek-ai/dsh-session'
-import SandboxPolicyService, { SANDBOX_MODES, SECRET_EXCEPTIONS, SECRET_PATHS, normalizeHosts, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
+import SandboxPolicyService, { CLOUD_LOGINS, SANDBOX_MODES, SECRET_EXCEPTIONS, SECRET_PATHS, normalizeHosts, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { NETWORK_LEAKS } from '@deepseek-ai/dsh-sandbox-policy'
 import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
 import type { ConfinedArgv, SandboxReadDenyCoverage } from '@deepseek-ai/dsh-sandbox'
@@ -413,6 +413,42 @@ describe('secret protection', () => {
     expect(ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }).readDeny).toBeUndefined()
   })
 
+  it('exposes the cloud logins named in the cloud logins file: readable, and writable where the folder exists', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-home-'))
+    const previous = process.env['HOME']
+    process.env['HOME'] = home
+    try {
+      mkdirSync(join(home, '.config', 'gcloud'), { recursive: true })
+      const file = join(home, 'cloud-logins.json')
+      const ctx = await withSecrets({ cloudLoginsFile: file })
+      expect(ctx.sandboxPolicy.cloudLogins()).toEqual([])
+      expect(ctx.sandboxPolicy.resolve().readDeny?.paths).toContain(join(home, '.config', 'gcloud'))
+      expect(ctx.sandboxPolicy.resolve().extraWritable).toBeUndefined()
+      writeFileSync(file, JSON.stringify({ enabled: ['kubernetes', 'gcloud', 'bogus'] }))
+      expect(ctx.sandboxPolicy.cloudLogins()).toEqual(['gcloud', 'kubernetes'])
+      const policy = ctx.sandboxPolicy.resolve()
+      expect(policy.readDeny?.paths).not.toContain(join(home, '.config', 'gcloud'))
+      expect(policy.readDeny?.paths).not.toContain(join(home, '.kube'))
+      expect(policy.readDeny?.paths).toContain(join(home, '.aws'))
+      expect(policy.extraWritable).toEqual([join(home, '.config', 'gcloud')])
+      expect(ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }).extraWritable).toBeUndefined()
+      expect(await policyContext(ctx, session('sess-cloud', '/p'))).toContain(
+        `available to commands: ${CLOUD_LOGINS.gcloud.label}, ${CLOUD_LOGINS.kubernetes.label}.`)
+      writeFileSync(file, '{ not json')
+      expect(ctx.sandboxPolicy.cloudLogins()).toEqual([])
+      writeFileSync(file, JSON.stringify({ enabled: 'aws' }))
+      expect(ctx.sandboxPolicy.cloudLogins()).toEqual([])
+      expect(await policyContext(ctx, session('sess-cloud-off', '/p'))).not.toContain('cloud command-line logins')
+      await expect(withSecrets({ cloudLoginsFile: 'relative.json' })).rejects.toThrow(/cloudLoginsFile must be an absolute path/)
+      const unprotected = await withSecrets({ protectSecrets: false, cloudLoginsFile: file })
+      writeFileSync(file, JSON.stringify({ enabled: ['gcloud'] }))
+      expect(await policyContext(unprotected, session('sess-cloud-open', '/p'))).not.toContain('cloud command-line logins')
+    } finally {
+      process.env['HOME'] = previous
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it('rejects a relative protected path at load', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionProjectionRegistry)
@@ -424,7 +460,7 @@ describe('secret protection', () => {
     const ctx = await withSecrets({})
     const target = session('sess-sec-on', '/p')
     const text = await policyContext(ctx, target)
-    expect(text).toContain('Secret files are hidden from commands and file tools: ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.netrc, ~/.git-credentials, ~/.npmrc, ~/.docker/config.json, ~/.env (except ~/.ssh/known_hosts, ~/.ssh/config), and .env files outside the workspace.')
+    expect(text).toContain('Secret files are hidden from commands and file tools: ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.azure, ~/.kube, ~/.netrc, ~/.git-credentials, ~/.npmrc, ~/.docker/config.json, ~/.env (except ~/.ssh/known_hosts, ~/.ssh/config), and .env files outside the workspace.')
     expect(text).toContain('retried once with sandbox_permissions danger-full-access')
     ctx.sandboxPolicy.limit(() => ({ mode: 'read-only', reason: 'plan mode is on' }))
     const held = await policyContext(ctx, target)
@@ -437,7 +473,7 @@ describe('secret protection', () => {
 
   it('says dotenv files outside the workspace stay readable by commands where the backend masks only listed paths (bwrap)', async () => {
     const text = await policyContext(await withSecrets({}, 'listed'), session('sess-sec-bwrap', '/p'))
-    expect(text).toContain('Secret files are hidden from commands and file tools: ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.netrc, ~/.git-credentials, ~/.npmrc, ~/.docker/config.json, ~/.env (except ~/.ssh/known_hosts, ~/.ssh/config); commands see an empty folder or an empty file in their place.')
+    expect(text).toContain('Secret files are hidden from commands and file tools: ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.azure, ~/.kube, ~/.netrc, ~/.git-credentials, ~/.npmrc, ~/.docker/config.json, ~/.env (except ~/.ssh/known_hosts, ~/.ssh/config); commands see an empty folder or an empty file in their place.')
     expect(text).toContain('.env files outside the workspace are hidden from the file tools only: commands on this computer can still read them')
     expect(text).not.toContain('Operation not permitted')
     expect(text).toContain('retried once with sandbox_permissions danger-full-access')

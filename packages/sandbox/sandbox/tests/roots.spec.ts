@@ -43,4 +43,11 @@ describe('writableRoots', () => {
     // Deduplicated after canonicalization (/tmp and os.tmpdir() may coincide).
     expect(new Set(writable).size).toBe(writable.length)
   })
+
+  it('workspace-write adds the extra writable folders; read-only still grants nothing', () => {
+    const extra = mkdtempSync(join(tmpdir(), 'dsh-login-'))
+    roots.push(extra)
+    expect(writableRoots({ mode: 'workspace-write', workspaceRoot: process.cwd(), extraWritable: [extra] })).toContain(realpathSync.native(extra))
+    expect(writableRoots({ mode: 'read-only', workspaceRoot: process.cwd(), extraWritable: [extra] })).toEqual([])
+  })
 })

@@ -19,6 +19,10 @@ export function bwrapProfileArgs(policy: SandboxPolicy): string[] {
   if (policy.mode === 'workspace-write') {
     args.push('--tmpfs', '/tmp')
     args.push('--bind', policy.workspaceRoot, policy.workspaceRoot)
+    // Exposed cloud logins: bound writable like the workspace, so the CLIs can refresh their tokens.
+    for (const path of policy.extraWritable ?? []) {
+      if (statSync(path, { throwIfNoEntry: false })?.isDirectory() === true) args.push('--bind', path, path)
+    }
   }
   // A network namespace of its own, with only loopback: no route to other hosts. Under `allowlist` the
   // proxy's Unix socket, outside /tmp and visible through the read-only root, is the only way out.

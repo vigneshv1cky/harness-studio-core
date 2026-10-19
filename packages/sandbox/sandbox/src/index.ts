@@ -108,6 +108,11 @@ export interface SandboxExecutionPolicy {
   network?: SandboxNetwork
   /** Files this execution may not read; absent hides nothing. */
   readDeny?: SandboxReadDeny
+  /**
+   * Existing directories outside the workspace that `workspace-write` may also write, such as the cloud
+   * command-line logins a person exposed; absent adds none.
+   */
+  extraWritable?: readonly string[]
 }
 
 /**

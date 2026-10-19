@@ -65,8 +65,24 @@ export const NETWORK_MODES = ['on', 'off', 'allowlist'] as const
  * keys, cloud and registry credentials, and plaintext password stores. `~/` is the user's home directory.
  */
 export const SECRET_PATHS = [
-  '~/.ssh', '~/.aws', '~/.config/gcloud', '~/.netrc', '~/.git-credentials', '~/.npmrc', '~/.docker/config.json', '~/.env',
+  '~/.ssh', '~/.aws', '~/.config/gcloud', '~/.azure', '~/.kube', '~/.netrc', '~/.git-credentials', '~/.npmrc',
+  '~/.docker/config.json', '~/.env',
 ] as const
+
+/**
+ * Harness Studio: cloud command-line logins a person may expose to confined commands. Each is one of
+ * {@link SECRET_PATHS}; exposing it makes the folder readable and writable to commands in `workspace-write`, so
+ * the CLI runs as the person and can refresh its tokens. Everything else stays hidden.
+ */
+export const CLOUD_LOGINS = {
+  gcloud: { path: '~/.config/gcloud', label: 'Google Cloud (gcloud)' },
+  aws: { path: '~/.aws', label: 'AWS (aws)' },
+  azure: { path: '~/.azure', label: 'Azure (az)' },
+  kubernetes: { path: '~/.kube', label: 'Kubernetes (kubectl)' },
+} as const
+
+/** A cloud login {@link CLOUD_LOGINS} names. */
+export type CloudLogin = keyof typeof CLOUD_LOGINS
 
 /** Paths inside {@link SECRET_PATHS} that stay readable: they hold no keys, and ssh needs them to connect through an agent. */
 export const SECRET_EXCEPTIONS = ['~/.ssh/known_hosts', '~/.ssh/config'] as const
@@ -104,12 +120,19 @@ function renderSecretsContext(deny: SandboxReadDeny | undefined, escalatable: bo
     }
     case 'none':
       return ` Secret files are hidden from the file tools only: ${listed}${dotenv}. This computer's sandbox cannot hide files from commands, so commands can still read them; do not read or send them with commands, and do not look for copies elsewhere.`
-    /* v8 ignore next 4 -- SandboxReadDenyCoverage is a typed same-process closed union; this branch is only the static exhaustiveness guard. */
+    /* v8 ignore next 4 -- SandboxReadDenyCoverage is a typed same-process closed union; this is the exhaustiveness guard. */
     default: {
       const never: never = coverage
       throw new Error(`unreachable read-deny coverage: ${String(never)}`)
     }
   }
+}
+
+/** The sentence telling the model which cloud logins its commands can use, or '' when none. */
+function renderCloudLoginsContext(logins: readonly CloudLogin[]): string {
+  if (logins.length === 0) return ''
+  const names = logins.map(login => CLOUD_LOGINS[login].label).join(', ')
+  return ` The user has made these cloud command-line logins available to commands: ${names}. Their CLIs run as the user without signing in again; the first such command in a session asks the user once.`
 }
 
 /** Host entries the allowlist accepts: a DNS name or IP address, optionally `*.` for subdomains. */
@@ -166,7 +189,9 @@ function renderNetworkContext(network: SandboxNetwork | undefined, escalatable: 
 }
 
 /** Render the policy without claiming which capabilities are mounted. */
-function renderPolicyContext(policy: SandboxExecutionPolicy, ceiling: SandboxCeiling | undefined, coverage: SandboxReadDenyCoverage): string {
+function renderPolicyContext(
+  policy: SandboxExecutionPolicy, ceiling: SandboxCeiling | undefined, coverage: SandboxReadDenyCoverage,
+): string {
   if (policy.mode === 'danger-full-access') return renderFileContext(policy, ceiling)
   const escalatable = ceiling === undefined
   return renderFileContext(policy, ceiling)
@@ -231,6 +256,11 @@ export interface Config {
   protectSecrets?: boolean
   /** More files or directories to hide while `protectSecrets` is on: absolute, or starting with `~/` (default: none). */
   protectedPaths?: string[]
+  /**
+   * Harness Studio: absolute path of a JSON file `{ "enabled": ["gcloud", "aws", ...] }` naming the
+   * {@link CLOUD_LOGINS} exposed to confined commands; read again whenever it changes. Absent exposes none.
+   */
+  cloudLoginsFile?: string
 }
 
 /** Inputs that select the sandbox policy for one capability call. */
@@ -274,6 +304,7 @@ export class SandboxPolicyService extends Service {
     networkFile: z.string(),
     protectSecrets: z.boolean().default(false),
     protectedPaths: z.array(z.string()).default([]),
+    cloudLoginsFile: z.string(),
   })
 
   static inject = ['sessionProjections']
@@ -286,9 +317,12 @@ export class SandboxPolicyService extends Service {
   private readonly configuredNetwork: SandboxNetwork
   private readonly networkFile: string | undefined
   /** The saved file's last read, keyed by its modification time and size. */
-  private savedNetwork: { stamp: string, network: SandboxNetwork | undefined } | undefined
+  private savedNetwork: { stamp: string; network: SandboxNetwork | undefined } | undefined
   /** The secret files hidden in every confined mode, or undefined when `protectSecrets` is off. */
   readonly readDeny: SandboxReadDeny | undefined
+  private readonly cloudLoginsFile: string | undefined
+  /** The cloud logins file's last read, keyed by its modification time and size. */
+  private savedCloudLogins: { stamp: string; logins: readonly CloudLogin[] } | undefined
   constructor(ctx: Context, config: Config) {
     super(ctx, 'sandboxPolicy')
     // schemastery (static Config) already filled `mode`; the cast records that
@@ -299,6 +333,8 @@ export class SandboxPolicyService extends Service {
     this.configuredNetwork = networkOf(config.network ?? 'on', config.allowedHosts ?? [])
     if (config.networkFile !== undefined && !isAbsolute(config.networkFile)) throw new Error('sandbox-policy: networkFile must be an absolute path')
     this.networkFile = config.networkFile
+    if (config.cloudLoginsFile !== undefined && !isAbsolute(config.cloudLoginsFile)) throw new Error('sandbox-policy: cloudLoginsFile must be an absolute path')
+    this.cloudLoginsFile = config.cloudLoginsFile
     if (config.protectSecrets === true) {
       const home = homedir()
       this.readDeny = {
@@ -326,6 +362,7 @@ export class SandboxPolicyService extends Service {
           const ceiling = this.ceilingOf(session)
           const capped = ceiling !== undefined && MODE_WIDTH[ceiling.mode] < MODE_WIDTH[this.uncappedMode({ session })]
           return renderPolicyContext(this.resolve({ session }), capped ? ceiling : undefined, this.readDenyCoverage())
+            + renderCloudLoginsContext(this.readDeny === undefined ? [] : this.cloudLogins())
         },
       })
     })
@@ -410,8 +447,52 @@ export class SandboxPolicyService extends Service {
       // Absent means `on`, so the common case resolves exactly as before network policy existed.
       ...network.mode === 'on' ? {} : { network },
       // Full access lifts confinement, and with it the hidden secret files.
-      ...this.readDeny === undefined || mode === 'danger-full-access' ? {} : { readDeny: this.readDeny },
+      ...this.readDeny === undefined || mode === 'danger-full-access' ? {} : this.confinedSecrets(this.readDeny),
     }
+  }
+
+  /**
+   * The hidden files and extra writable folders for a confined call: the exposed cloud logins leave the hidden
+   * list and, where their folder exists, become writable.
+   */
+  private confinedSecrets(readDeny: SandboxReadDeny): Pick<SandboxExecutionPolicy, 'readDeny' | 'extraWritable'> {
+    const logins = this.cloudLogins()
+    if (logins.length === 0) return { readDeny }
+    const home = homedir()
+    const exposed = logins.map(login => expandHome(CLOUD_LOGINS[login].path, home))
+    const writable = exposed.filter(path => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true)
+    return {
+      readDeny: { ...readDeny, paths: readDeny.paths.filter(path => !exposed.includes(path)) },
+      ...writable.length === 0 ? {} : { extraWritable: writable },
+    }
+  }
+
+  /**
+   * The cloud logins exposed to confined commands, from the cloud logins file; none without one.
+   * @returns the exposed logins, in {@link CLOUD_LOGINS} order.
+   */
+  cloudLogins(): readonly CloudLogin[] {
+    if (this.cloudLoginsFile === undefined) return []
+    let stamp: string
+    try {
+      const info = statSync(this.cloudLoginsFile)
+      stamp = `${info.mtimeMs}:${info.size}`
+    } catch {
+      // No saved choice yet: no login is exposed.
+      return []
+    }
+    if (this.savedCloudLogins?.stamp !== stamp) {
+      let logins: CloudLogin[] = []
+      try {
+        const saved = JSON.parse(readFileSync(this.cloudLoginsFile, 'utf8')) as { enabled?: unknown }
+        const enabled = Array.isArray(saved.enabled) ? saved.enabled : []
+        logins = (Object.keys(CLOUD_LOGINS) as CloudLogin[]).filter(login => enabled.includes(login))
+      } catch (error) {
+        this.ctx.logger.warn('sandbox-policy: cannot read %s (%s); no cloud login is exposed', this.cloudLoginsFile, error instanceof Error ? error.message : String(error))
+      }
+      this.savedCloudLogins = { stamp, logins }
+    }
+    return this.savedCloudLogins.logins
   }
 
   /**
@@ -431,7 +512,7 @@ export class SandboxPolicyService extends Service {
     if (this.savedNetwork?.stamp !== stamp) {
       let network: SandboxNetwork | undefined
       try {
-        const saved = JSON.parse(readFileSync(this.networkFile, 'utf8')) as { network?: unknown, allowedHosts?: unknown }
+        const saved = JSON.parse(readFileSync(this.networkFile, 'utf8')) as { network?: unknown; allowedHosts?: unknown }
         const mode = NETWORK_MODES.find(m => m === saved.network)
         if (mode !== undefined) network = networkOf(mode, Array.isArray(saved.allowedHosts) ? saved.allowedHosts : [])
         else this.ctx.logger.warn('sandbox-policy: %s has no valid "network"; using the configured network policy', this.networkFile)

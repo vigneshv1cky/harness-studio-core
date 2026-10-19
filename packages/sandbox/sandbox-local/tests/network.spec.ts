@@ -5,6 +5,7 @@
 
 import { createServer, request, type Server } from 'node:http'
 import { connect } from 'node:net'
+import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { SANDBOX_UNAVAILABLE, SandboxNetworkUnavailableError } from '@deepseek-ai/dsh-sandbox'
@@ -28,6 +29,17 @@ async function provider(internals: LocalSandboxProvider['internals']) {
   closers.push(() => ctx.fiber.dispose())
   return sandbox
 }
+
+describe('extra writable folders', () => {
+  it('bwrap binds existing extra folders writable in workspace-write only; seatbelt allows writes under them', () => {
+    const extra = tmpdir()
+    const args = bwrapProfileArgs({ mode: 'workspace-write', workspaceRoot: '/ws', extraWritable: [extra, '/no/such/folder'] })
+    expect(args.join(' ')).toContain(`--bind ${extra} ${extra}`)
+    expect(args.join(' ')).not.toContain('/no/such/folder')
+    expect(bwrapProfileArgs({ mode: 'read-only', workspaceRoot: '/ws', extraWritable: [extra] }).join(' ')).not.toContain(`--bind ${extra}`)
+    expect(seatbeltProfileArgs({ mode: 'workspace-write', workspaceRoot: '/ws', extraWritable: ['/ws-login'] })[1]).toContain('(subpath "/ws-login")')
+  })
+})
 
 describe('network profile dialects', () => {
   it('bwrap gives a limited command a network namespace of its own, and leaves `on` alone', () => {
@@ -190,7 +202,7 @@ describe('allowlist matching', () => {
 })
 
 describe('the proxy', () => {
-  async function upstream(): Promise<{ server: Server, port: number }> {
+  async function upstream(): Promise<{ server: Server; port: number }> {
     const server = createServer((req, res) => { res.end(req.url === '/host' ? `host ${req.headers.host}` : `upstream saw ${req.method} ${req.url}`) })
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     closers.push(() => new Promise(resolve => server.close(() => resolve())))
@@ -201,13 +213,14 @@ describe('the proxy', () => {
     closers.push(() => proxy.close())
     return (proxy.address as { port: number }).port
   }
-  const viaProxy = (proxyPort: number, url: string, headers: Record<string, string> = {}) => new Promise<{ status: number, body: string }>((resolve, reject) => {
-    request({ host: '127.0.0.1', port: proxyPort, path: url, method: 'GET', headers }, (res) => {
-      let body = ''
-      res.on('data', (chunk: Buffer) => { body += chunk.toString() })
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
-    }).on('error', reject).end()
-  })
+  const viaProxy = (proxyPort: number, url: string, headers: Record<string, string> = {}) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      request({ host: '127.0.0.1', port: proxyPort, path: url, method: 'GET', headers }, (res) => {
+        let body = ''
+        res.on('data', (chunk: Buffer) => { body += chunk.toString() })
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body }))
+      }).on('error', reject).end()
+    })
   const tunnel = (proxyPort: number, authority: string) => new Promise<string>((resolve, reject) => {
     const socket = connect(proxyPort, '127.0.0.1', () => socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`))
     let reply = ''

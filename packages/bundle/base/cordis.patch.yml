@@ -253,6 +253,8 @@
         network: 'on'
         allowedHosts: []
         networkFile: !!js dshHomePath('harness-studio', 'network.json')
+        # Cloud command-line logins (gcloud, aws, az, kubectl) a person exposed in Settings → General.
+        cloudLoginsFile: !!js dshHomePath('harness-studio', 'cloud-logins.json')
         # Hide well-known secret files (SSH keys, cloud and registry credentials, dotenv files outside the
         # workspace) from confined commands and the agent's file tools, plus Harness's own key store and
         # Harness Studio's connector settings and sign-ins and saved watches (which hold command output).
