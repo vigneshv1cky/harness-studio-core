@@ -82,7 +82,10 @@ interface QuestionCard {
 class QuestionCards {
   readonly #cards = new Map<string, QuestionCard>()
 
-  constructor(private readonly publish: PendingInteractionPublisher<PendingQuestion>) {}
+  constructor(
+    private readonly publish: PendingInteractionPublisher<PendingQuestion>,
+    private readonly typedReplyRefusal: () => string,
+  ) {}
 
   byCallId(sessionId: SessionId, callId: string): QuestionCard | undefined {
     return this.#cards.get(PendingQuestion.keyOf(sessionId, callId))
@@ -150,7 +153,10 @@ class QuestionCards {
     }
     // A review card has no request left to park: closing it drops the card, and
     // the tool call row builds another one from the same transcript record.
-    pending.attachSeat({ hide: pending.review === undefined ? card.hide : card.remove })
+    pending.attachSeat({
+      hide: pending.review === undefined ? card.hide : card.remove,
+      typedReplyRefusal: this.typedReplyRefusal,
+    })
     this.#cards.set(pending.key, card)
     return card
   }
@@ -371,7 +377,8 @@ export function apply(ctx: ClientContext): void {
   const registerPendingInteraction = ctx.uiSession.registerPendingInteraction<PendingQuestion>(
     pending => pending.kind === 'plan-review' ? 2 : 1,
   )
-  const cards = new QuestionCards(registerPendingInteraction)
+  const t = ctx.locale.bind(NS)
+  const cards = new QuestionCards(registerPendingInteraction, () => t('reply.onCard'))
   ctx.effect(() => () => { cards.dispose() }, 'ui-user-questions: cards')
   const disposePanels = ctx.reflect.provide('userQuestionPanels', {
     reveal: (sessionId, callId) => cards.reveal(sessionId, callId),

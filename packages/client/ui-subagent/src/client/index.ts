@@ -35,6 +35,8 @@ export const inject = ['sessions', 'uiWorkspace', 'slots', 'locale', 'sidebarRig
 
 /** Claim the composer for one-shot history or an unavailable continuation owner. */
 function selectReadOnlySubagent(owner: ComposerChainProps): SubagentReadOnlyMatch | null {
+  // The notice explains the composer seat; the conversation's pending-request card is not its to replace.
+  if (owner.pendingInteraction !== undefined) return null
   const subagent = owner.session?.subagent
   if (subagent === undefined || subagent === null) return null
   if (subagent.address.mode === 'unknown') return { reason: 'unknown' }

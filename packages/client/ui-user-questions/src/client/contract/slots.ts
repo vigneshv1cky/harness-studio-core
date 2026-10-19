@@ -145,7 +145,12 @@ export interface QuestionRpcChannel {
 export interface QuestionSeat {
   /** Withdraw the card from the pending-interaction registry without ending the request. */
   hide(): void
+  /** Localized refusal for composer text that no mounted presentation of the card can take. */
+  typedReplyRefusal(): string
 }
+
+/** A mounted presentation's handler for composer text: it answers the question on screen. */
+export type QuestionTypedReply = (text: string) => Promise<void>
 
 /** One waterfall request as the Remote Event listener awaits it. */
 export interface QuestionWaterfallRequest {
@@ -248,6 +253,11 @@ export class PendingQuestion {
    * it ends the request (`cancel`).
    */
   readonly dismissal: 'hide' | 'cancel'
+  /**
+   * Composer messages answer the question on screen while this card is the
+   * Session's visible interaction. A read-only review card claims nothing.
+   */
+  readonly composerReply: { readonly kind: 'answer'; answer(text: string): Promise<void> } | undefined
 
   #state: UserQuestionState = 'open'
   #waterfall: QuestionWaterfallChannel | undefined
@@ -263,6 +273,7 @@ export class PendingQuestion {
   #closed = false
   readonly #siblings: (() => readonly string[]) | undefined
   readonly #listeners = new Set<() => void>()
+  readonly #typedReplies: QuestionTypedReply[] = []
   #snapshot: QuestionCardSnapshot
 
   /**
@@ -285,6 +296,9 @@ export class PendingQuestion {
     this.callId = callId
     this.review = review
     this.dismissal = callId === undefined ? 'cancel' : 'hide'
+    this.composerReply = review === undefined
+      ? { kind: 'answer', answer: text => this.#answerTyped(text) }
+      : undefined
     this.#siblings = siblings
     if (callId === undefined) nextQuestionKey += 1
     this.key = callId === undefined
@@ -435,6 +449,26 @@ export class PendingQuestion {
    */
   attachSeat(seat: QuestionSeat): void {
     this.#seat = seat
+  }
+
+  /**
+   * Route composer text to a mounted presentation while it is mounted.
+   * @param reply - applies the text to the question on screen.
+   * @returns removal of the handler.
+   */
+  receiveTypedReplies(reply: QuestionTypedReply): () => void {
+    this.#typedReplies.push(reply)
+    return () => {
+      const index = this.#typedReplies.indexOf(reply)
+      if (index >= 0) this.#typedReplies.splice(index, 1)
+    }
+  }
+
+  /** The newest mounted presentation takes the text; with none, the composer keeps it. */
+  #answerTyped(text: string): Promise<void> {
+    const reply = this.#typedReplies.at(-1)
+    if (reply !== undefined) return reply(text)
+    return Promise.reject(new Error(this.#seat?.typedReplyRefusal() ?? 'this question cannot take a typed answer'))
   }
 
   /**

@@ -256,7 +256,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     }
     /** Registered Conversation target Views, rendered one at a time. */
     'conversation.view': { kind: 'list'; scope: 'session'; owner: ConvViewOwnerProps }
-    /** Selector-routed replacements for the current Session's resident composer. */
+    /**
+     * Selector-routed takeovers. Rendered in the composer seat without the
+     * pending interaction, where an election replaces the input card, and after
+     * the transcript with it, where an election shows the request's card above
+     * the still-usable input card.
+     */
     'conversation.composer': { kind: 'chain'; scope: 'session'; owner: ComposerChainProps }
     /** Workspace picker shown by the blank-session Hero. */
     'conversation.hero.workspace': { kind: 'single'; scope: 'root'; owner: EmptyWorkspaceOwnerProps }
@@ -513,7 +518,7 @@ export interface ComposerChainProps {
   sessionId: SessionId | undefined
   /** Current Session lifecycle state, absent without a selected Session. */
   session: SessionSnapshot | undefined
-  /** Effective business-owned interaction awaiting the user in this Session. */
+  /** Effective business-owned interaction awaiting the user; always absent in the composer seat. */
   pendingInteraction: SessionPendingInteraction | undefined
 }
 

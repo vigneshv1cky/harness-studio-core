@@ -31,6 +31,7 @@ export function ConversationContent(props: ConversationContentProps) {
   const [body, setBody] = useState<HTMLDivElement | null>(null)
   const pendingInteraction = useSessionStatus(snapshot =>
     sessionId === undefined ? undefined : snapshot.get(sessionId)?.pendingInteraction)
+  const pendingReply = pendingInteraction?.composerReply?.kind
   const inputState = useInput(s => s)
   const cwd = useSessions(s => sessionId === undefined ? undefined : s.byId[sessionId]?.cwd)
   const workspaces = useWorkspaces(s => s)
@@ -158,7 +159,11 @@ export function ConversationContent(props: ConversationContentProps) {
         // block keeps the model seat live because choosing a model is how the
         // user clears it.
         ? { blocked: composerBlock, placeholder: composerBlock.reason }
-        : hero ? { placeholder: t('placeholder.hero') } : {}),
+        : hero ? { placeholder: t('placeholder.hero') }
+          // A request waiting in the conversation names itself in the empty
+          // composer, so it stays visible after the card scrolls away.
+          : pendingReply === 'answer' ? { placeholder: t('placeholder.answer') }
+            : pendingReply === 'hold' ? { placeholder: t('placeholder.decide') } : {}),
   })
 
   const composerBar = (
@@ -170,11 +175,29 @@ export function ConversationContent(props: ConversationContentProps) {
     </div>
   )
 
+  // The chain renders twice. The composer seat offers no pending interaction,
+  // so only Session-owned takeovers (a read-only subagent) replace the input
+  // card; the pending interaction's card renders after the transcript, in the
+  // conversation's flow, and the input card stays usable below it.
   const composer = renderSlotChain(
     'conversation.composer',
-    { sessionId, session, pendingInteraction },
+    { sessionId, session, pendingInteraction: undefined },
     { fallback: composerBar, fallbackOnly: sessionId === undefined, overlay: true },
   )
+  const pendingCard = sessionId === undefined || pendingInteraction === undefined
+    ? null
+    : renderSlotChain('conversation.composer', { sessionId, session, pendingInteraction })
+
+  // A newly waiting request scrolls the conversation to its end, where the
+  // card sits directly above the composer.
+  const pendingSeat = useRef<HTMLDivElement>(null)
+  const pendingKey = pendingInteraction?.key
+  useEffect(() => {
+    const scroller = pendingSeat.current?.parentElement
+    if (pendingKey === undefined || scroller == null) return
+    const frame = requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight })
+    return () => { cancelAnimationFrame(frame) }
+  }, [pendingKey])
 
   // Sticky wraps the whole chain output (fallback + elected overlay), not
   // only `.composerStack`: overlay:true renders those as siblings, and sticky
@@ -197,6 +220,11 @@ export function ConversationContent(props: ConversationContentProps) {
     >
       <div className={css.scrollBody} data-conversation-scroll="">
         {sessionId === undefined ? null : <Views />}
+        {pendingCard === null ? null : (
+          <div ref={pendingSeat} className={css.pendingSeat} data-pending-seat="" data-conversation-region="pending">
+            {pendingCard}
+          </div>
+        )}
         {composerSeat}
       </div>
       <WidthControls container={body} phase={phase} />

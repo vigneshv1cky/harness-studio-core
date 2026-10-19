@@ -12,6 +12,7 @@ import type {
   BeginSubmissionInput, PendingSubmissionRetirement,
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { SessionPendingInteractionBase } from '@deepseek-ai/dsh-client-ui-session/client'
 import { ComposerBlockRegistry } from '../src/client/input/blocks.ts'
 import { InputHub } from '../src/client/input/hub.ts'
 import { ConversationController } from '../src/client/service.ts'
@@ -914,4 +915,53 @@ it.each([
     b.shell.submit(mode, 'enter')
     expect(track).toHaveBeenCalledExactlyOnceWith('send_button_click', { run_mode: 'default', msg_type: expected }, expect.any(Number))
   } finally { await b.runtime.dispose() }
+})
+
+describe('a composer message while a request waits in the conversation', () => {
+  const pending = (composerReply: SessionPendingInteractionBase['composerReply']): SessionPendingInteractionBase => ({
+    kind: 'question', key: 'request-a', sessionId: 's1' as SessionId, composerReply,
+  })
+
+  it('answers the request instead of prompting the agent', async () => {
+    const b = await bench()
+    try {
+      const answer = vi.fn(() => Promise.resolve())
+      const publish = b.runtime.ctx.uiSession.registerPendingInteraction<SessionPendingInteractionBase>(() => 0)
+      publish(pending({ kind: 'answer', answer }), async () => {})
+      b.shell.setDraft('  只改文档  ')
+      b.shell.submit()
+      await vi.waitFor(() => { expect(answer).toHaveBeenCalledExactlyOnceWith('只改文档') })
+      await vi.waitFor(() => { expect(b.shell.snapshot.draft).toBe('') })
+      expect(b.prompt).not.toHaveBeenCalled()
+    } finally { await b.runtime.dispose() }
+  })
+
+  it('keeps the text with the reason when the request refuses it', async () => {
+    const b = await bench()
+    try {
+      const publish = b.runtime.ctx.uiSession.registerPendingInteraction<SessionPendingInteractionBase>(() => 0)
+      publish(pending({ kind: 'answer', answer: () => Promise.reject(new Error('在卡片上回答')) }), async () => {})
+      b.shell.setDraft('答案')
+      b.shell.submit()
+      await vi.waitFor(() => { expect(b.shell.notices.getSnapshot()?.text).toBe('在卡片上回答') })
+      expect(b.shell.snapshot.draft).toBe('答案')
+      expect(b.prompt).not.toHaveBeenCalled()
+    } finally { await b.runtime.dispose() }
+  })
+
+  it('holds every message until a holding request is decided, then sends normally', async () => {
+    const b = await bench()
+    try {
+      const publish = b.runtime.ctx.uiSession.registerPendingInteraction<SessionPendingInteractionBase>(() => 0)
+      const remove = publish(pending({ kind: 'hold' }), async () => {})
+      b.shell.setDraft('下一步')
+      b.shell.submit()
+      await vi.waitFor(() => { expect(b.shell.notices.getSnapshot()?.text).toBe(zh['reply.hold']) })
+      expect(b.shell.snapshot.draft).toBe('下一步')
+      expect(b.prompt).not.toHaveBeenCalled()
+      remove()
+      b.shell.submit()
+      await vi.waitFor(() => { expect(b.prompt).toHaveBeenCalledOnce() })
+    } finally { await b.runtime.dispose() }
+  })
 })

@@ -25,7 +25,7 @@ The Web client shows an agent's question beside the chat input. Users choose opt
 <a id="use-this-package"></a>
 ## Use this package
 
-When the agent asks a question, the attached card temporarily occupies the composer seat: answer each question, navigate with the pager, or skip it. A first choice marked “Recommended” starts selected, but remains an unsubmitted draft and does not pause a timed countdown. Clicking a single-select choice advances immediately. Enter on a focused option attempts to submit the batch without selecting that option; missing answers return to the first incomplete question. Enter in a text answer continues the flow, while Shift+Enter breaks a line instead (during IME composition Enter only confirms the input candidate without advancing).
+When the agent asks a question, the attached card appears after the transcript, in the conversation flow, and the conversation scrolls to it; the composer stays usable below it. Answer each question, navigate with the pager, or skip it. A message sent from the composer answers the question on screen as its free-text answer, then moves to the next question or submits the batch on the last one; the card never takes keyboard focus, so typing in the composer is not interrupted. A presentation that cannot take composer text, such as another plugin's card for the same request, leaves the text in the composer with a notice. A first choice marked “Recommended” starts selected, but remains an unsubmitted draft and does not pause a timed countdown. Clicking a single-select choice advances immediately. Enter on a focused option attempts to submit the batch without selecting that option; missing answers return to the first incomplete question. Enter in a text answer continues the flow, while Shift+Enter breaks a line instead (during IME composition Enter only confirms the input candidate without advancing).
 
 ### Answering
 
@@ -39,7 +39,7 @@ A question that already settled opens as a read-only card: the same pager over t
 
 ### The plan-review card
 
-A `plan-review` intent — set by `dsh-plan-mode` on the `exit_plan_mode` review — renders a compact approval card: a `Plan review` strip with a `View full plan` link, the plan title and a two-line plain-text summary, and `Request changes` / `Approve` actions. The strip uses the shared warning dot and changes it to the ongoing loader while either action settles. The complete plan opens in the sidebar through the link or its permanent Chat card. Approve answers with the asker's approval label; `Request changes` rejects the wait as `ASK_CANCELLED`, returning the composer for the user's feedback without submitting an approval. The card has no separate refusal button.
+A `plan-review` intent — set by `dsh-plan-mode` on the `exit_plan_mode` review — renders a compact approval card: a `Plan review` strip with a `View full plan` link, the plan title and a two-line plain-text summary, and `Request changes` / `Approve` actions. The strip uses the shared warning dot and changes it to the ongoing loader while either action settles. The complete plan opens in the sidebar through the link or its permanent Chat card. Approve answers with the asker's approval label; `Request changes` keeps the card and focuses the composer, and the message the user sends answers the review with that text as feedback. A card that cannot take composer text, or one shown outside a conversation, closes instead. The card has no separate refusal button.
 
 ### Failure and recovery
 
@@ -75,7 +75,7 @@ This package fills `userQuestionPanels`, the optional capability `dsh-client-ui-
 
 ### Intent surface election
 
-The card accepts one question declaring the intent, carrying the plan as `detail`, and offering the named approve label, with at most one alternative and no multi-select. Its secondary action returns to the composer for change requests. Larger choices and multi-select questions remain in the generic flow. A plan review exposes `conversation.plan-review.actions` with its request key, full text, and optional invocation identity; the plan plugin opens logged plans from history and unlogged reviews as temporary sidebar previews, and opening a document does not answer or dismiss the review.
+The card accepts one question declaring the intent, carrying the plan as `detail`, and offering the named approve label, with at most one alternative and no multi-select. Its secondary action sends the user to the composer for a change request. Larger choices and multi-select questions remain in the generic flow. A plan review exposes `conversation.plan-review.actions` with its request key, full text, and optional invocation identity; the plan plugin opens logged plans from history and unlogged reviews as temporary sidebar previews, and opening a document does not answer or dismiss the review.
 
 ### Copy and locale
 
@@ -116,7 +116,7 @@ These limits define question-card ownership and cross-client behavior; they are 
 
 - **Unsubmitted drafts are local to one browser** — Session navigation, page reload, and browser restart preserve them, but another browser or device reconstructs only the Host-stored question.
 - **One request owns the question card at a time** — later pending requests remain in the session snapshot and become visible after the earlier request resolves.
-- **Questions appear in the active Session composer** — durable pending questions do not add a separate sidebar inbox; reopen the owning Session to answer one.
+- **Questions appear in the active Session conversation** — durable pending questions do not add a separate sidebar inbox; reopen the owning Session to answer one.
 
 <a id="dev-note"></a>
 ### Dev Note

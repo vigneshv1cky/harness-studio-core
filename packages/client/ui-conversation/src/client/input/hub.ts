@@ -16,6 +16,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-locale/client'
 import type { InboxState } from '@deepseek-ai/dsh-agent/types'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
+import type { PendingComposerReply } from '@deepseek-ai/dsh-client-ui-session/client'
 import type {
   DraftAttachmentId, DraftAttachmentSerializationResult, DraftInitializationOptions, DraftInitializationResult, InputTriggerController,
   SessionInputResolver, SessionInput, SubmitOutcome,
@@ -287,7 +288,9 @@ export class InputHub implements SessionInputResolver {
    * Default sink: optimistic clear + prompt. The session is always a real
    * host entity (materialized when its workspace was picked), so there is
    * exactly one path; a failed first prompt is an ordinary prompt failure
-   * (banner via promptError, draft restored only while untouched).
+   * (banner via promptError, draft restored only while untouched). While the
+   * Session's visible pending interaction claims the composer, the message
+   * goes to that interaction instead of the agent.
    */
   private sink(
     session: SessionFace,
@@ -297,7 +300,29 @@ export class InputHub implements SessionInputResolver {
     signal: AbortSignal,
   ): Promise<SubmitOutcome> {
     if (text === '' && attachmentIds.length === 0) return Promise.resolve({ kind: 'success' })
+    const uiSession = this.rootCtx.get('uiSession')
+    const reply = uiSession?.sessionStatus.getSnapshot().get(session.sessionId)?.pendingInteraction?.composerReply
+    if (reply !== undefined) return this.replyToPending(reply, text, attachmentIds)
     return this.conversation().sendSession(session, text, attachmentIds, mode, signal)
+  }
+
+  /**
+   * Hand one composer message to the pending interaction that claims it. A
+   * refusal is an error outcome, so the composer keeps the text and shows why.
+   */
+  private async replyToPending(
+    reply: PendingComposerReply,
+    text: string,
+    attachmentIds: readonly DraftAttachmentId[],
+  ): Promise<SubmitOutcome> {
+    if (reply.kind === 'hold') return { kind: 'error', text: this.t('reply.hold') }
+    if (attachmentIds.length > 0) return { kind: 'error', text: this.t('reply.attachments') }
+    try {
+      await reply.answer(text)
+    } catch (error) {
+      return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
+    }
+    return { kind: 'success' }
   }
 
   /**

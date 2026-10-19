@@ -357,6 +357,20 @@ button.crumb:hover {
   --dsh-composer-text-max-height: 336px;
 }
 
+/* The pending interaction's card, after the transcript and in its flow. The
+   cards keep the text cap they had in the composer seat. */
+.pendingSeat {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  --dsh-composer-text-max-height: 336px;
+}
+
+/* Under a view's composer overlay the seat is absolute; the card stays above it. */
+.scrollBody:has([data-conversation-composer-overlay]) > .pendingSeat {
+  margin-bottom: var(--dsh-composer-height, 0px);
+}
+
 /* Active phase: header is ordinary column chrome above the scrollport (not
    sticky). The scroll body holds the transcript and the sticky composer seat
    so wheel over the footer moves the flow. */

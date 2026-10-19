@@ -13,6 +13,7 @@ import type { PendingQuestion } from './contract/slots.ts'
 import type { QuestionDraftAnswer, QuestionDraftProgress } from './draft-store.ts'
 import { PlanReviewPanel } from './PlanReviewPanel.tsx'
 import css from './QuestionComposer.module.css'
+import { useTypedReply } from './typed-reply.ts'
 
 /**
  * Displayed feedback: validation feedback is stored as a dictionary KEY and
@@ -77,10 +78,6 @@ interface AnswerFieldProps {
   placeholder: string
   /** Whether a submission in flight has frozen the field. */
   disabled: boolean
-  /** Whether this field takes focus on mount. */
-  autoFocus?: boolean
-  /** Called when the field takes focus. */
-  onFocus?: () => void
   /** Called with each edit of the draft. */
   onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void
   /** Called with each key press, before the browser's own handling. */
@@ -108,13 +105,11 @@ function AnswerField(props: AnswerFieldProps) {
     <div className={clsx(css.field, props.variant === 'inline' ? css.customInline : css.customBlock)}>
       <div aria-hidden className={css.fieldMirror}>{`${props.value}\n`}</div>
       <textarea
-        autoFocus={props.autoFocus}
         className={css.fieldInput}
         value={props.value}
         disabled={props.disabled}
         rows={1}
         placeholder={props.placeholder}
-        onFocus={props.onFocus}
         onChange={props.onChange}
         onKeyDown={props.onKeyDown}
       />
@@ -230,10 +225,6 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
   // Collapsed to the header strip so the conversation above stays readable
   // while the user decides; answer drafts live in the Session store above.
   const [minimized, setMinimized] = useState(false)
-  // The free-form textarea autofocuses on first presentation; re-expanding a
-  // collapsed question must not steal focus from the expand toggle back into
-  // the input, so focus is granted once per question index.
-  const focusedQuestions = useRef(new Set<number>())
   const answerSurface = useRef<HTMLDivElement>(null)
   // Every navigation write stays in bounds and drafts mirrors questions 1:1.
   // oxlint-disable-next-line typescript/no-non-null-assertion
@@ -416,6 +407,25 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
     continueFlow()
   }
 
+  // Composer text answers the question on screen, as its free-text field
+  // would, then continues: to the next question, or submits the batch.
+  useTypedReply(pending, (text) => {
+    if (locked) return Promise.reject(new Error(t('error.unavailable')))
+    engage()
+    const nextDrafts = drafts.map((item, itemIndex) => itemIndex === index
+      ? { selected: question.multiSelect === true ? item.selected : [], custom: text, skipped: false }
+      : item)
+    setError(null)
+    if (index < questions.length - 1) {
+      replaceProgress(index + 1, nextDrafts)
+      return Promise.resolve()
+    }
+    // Kept in the card first, so a failed submission leaves the text visible there.
+    replaceProgress(index, nextDrafts)
+    submitDrafts(nextDrafts)
+    return Promise.resolve()
+  })
+
   const skipQuestion = (): void => {
     engage()
     const nextDrafts = drafts.map((item, itemIndex) => itemIndex === index
@@ -578,14 +588,12 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
                   )
                   : (
                     <AnswerField
-                      // A missing countdown does not imply an indefinite request:
-                      // a timed request can still be awaiting its claim's first frame.
-                      autoFocus={canSubmit && countdown === undefined && !locked && !focusedQuestions.current.has(index)}
+                      // No autofocus: the card sits in the conversation and the
+                      // composer below keeps the keyboard, answering this question.
                       variant="block"
                       value={draft.custom}
                       disabled={locked}
                       placeholder={t('custom.placeholder')}
-                      onFocus={() => { focusedQuestions.current.add(index) }}
                       onChange={draftCustom}
                       onKeyDown={continueFromCustom}
                     />

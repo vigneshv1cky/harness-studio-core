@@ -11,7 +11,7 @@ import {
   allowAllAccess, bindSnapshotSelector, makeTranslate, RemoteError, sessionSnapshot as sessionFixture,
 } from '@deepseek-ai/dsh-client-test-runtime'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
+import type { SessionPendingInteractionBase, SessionStatus, SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
@@ -31,7 +31,7 @@ import './control-row-dom.ts'
 import { InputBar } from '../src/client/skeleton/InputBar.tsx'
 import type { InputBarProps } from '../src/client/skeleton/InputBar.tsx'
 import type {
-  ComposerBarOwnerProps, ConversationContentInputProps, ConversationContentProps,
+  ComposerBarOwnerProps, ComposerChainProps, ConversationContentInputProps, ConversationContentProps,
   ConversationHeaderLineageOwnerProps, ConversationSessionHeaderSlotProps, ConversationSessionSlotProps, ConversationSlotProps,
   ConversationViewsProps,
 } from '../src/client/contract/slots.ts'
@@ -140,6 +140,8 @@ function mount(
     composerBlock?: { reason: string }
     /** Mutable view ledger used by registration-order regressions. */
     viewTabs?: ViewTab[]
+    /** The Session's visible pending interaction. */
+    pendingInteraction?: SessionPendingInteractionBase
   } = {},
 ) {
   const sessionId = 'sessionId' in options ? options.sessionId : SID
@@ -173,7 +175,10 @@ function mount(
   const conversation = createSnapshotStore<ConversationSnapshot>(EMPTY_CONVERSATION_SNAPSHOT)
   const useConversation = bindSnapshotSelector(conversation)
   const useSessionStatus = bindSnapshotSelector(
-    createSnapshotStore<SessionStatusSnapshot>(new Map()),
+    createSnapshotStore<SessionStatusSnapshot>(new Map(options.pendingInteraction === undefined ? [] : [[SID, {
+      // Fixtures stand in for whichever request domains the assembled Client declares.
+      running: true, pendingInteraction: options.pendingInteraction as SessionStatus['pendingInteraction'], completionUnread: false,
+    }]])),
   )
   const store = createConversationStore().create()
   store.actions.setDraft('ordinary draft')
@@ -311,8 +316,11 @@ function mount(
     }
     return <div data-testid={`view-${opts?.only ?? key}`} />
   }) as ConversationContentProps['renderSlot']
-  const renderSlotChain = ((_key, _owner, opts) => (
-    options.overlayTakeover === true
+  const chainOwners: ComposerChainProps[] = []
+  const renderSlotChain = ((_key, owner, opts) => {
+    chainOwners.push(owner as ComposerChainProps)
+    if ((owner as ComposerChainProps).pendingInteraction !== undefined) return <div data-testid="pending-card" />
+    return options.overlayTakeover === true
       ? (
         <>
           <div data-chain-overlay-fallback="conversation.composer" style={{ display: 'none' }}>
@@ -322,7 +330,7 @@ function mount(
         </>
       )
       : (opts?.fallback ?? null)
-  )) as ConversationContentProps['renderSlotChain']
+  }) as ConversationContentProps['renderSlotChain']
   const SessionProvider: ConversationContentProps['SessionProvider'] = ({ children }) => children
   const renderFactorySlot = ((_name: string, input: ConversationContentInputProps, factoryOptions?: {
     slots?: Record<string, (props: never) => ReactNode>
@@ -379,7 +387,7 @@ function mount(
   const props: ConversationSlotProps = { ...runtimeProps, renderSlot, renderFactorySlot }
   const view = render(<ConversationMainPanel {...props} />)
   return {
-    view, store, wiring, sink, retargetWorkspace, session, conversation, slotCalls, lineageOwners, seatOwners, open,
+    view, store, wiring, sink, retargetWorkspace, session, conversation, slotCalls, lineageOwners, seatOwners, open, chainOwners,
     pickerOwner: () => pickerOwner,
     rerender: () => { view.rerender(<ConversationMainPanel {...props} />) },
   }
@@ -534,6 +542,35 @@ describe('ConversationRoot resident composer', () => {
     const fallback = b.view.container.querySelector('[data-chain-overlay-fallback="conversation.composer"]')
     expect(seat?.contains(takeover)).toBe(true)
     expect(seat?.contains(fallback)).toBe(true)
+  })
+
+  it.each([
+    ['answer', zh['placeholder.answer']],
+    ['hold', zh['placeholder.decide']],
+  ] as const)('shows a waiting request (%s) after the transcript and keeps the composer usable below it', (kind, hint) => {
+    const composerReply = kind === 'answer' ? { kind, answer: () => Promise.resolve() } : { kind }
+    const b = mount(sessionSnapshotOf(), undefined, undefined, {
+      pendingInteraction: { kind: 'question', key: 'request-a', sessionId: SID, composerReply },
+    })
+    const host = b.view.container.querySelector('[data-conversation-scroll]')
+    const card = b.view.getByTestId('pending-card')
+    const pendingSeat = b.view.container.querySelector('[data-pending-seat]')
+    const seat = b.view.container.querySelector('[data-composer-seat]')
+    const input = b.view.container.querySelector('[data-composer-input]')
+    expect(pendingSeat?.contains(card)).toBe(true)
+    expect(seat?.contains(card)).toBe(false)
+    expect(pendingSeat?.parentElement).toBe(host)
+    expect(pendingSeat?.nextElementSibling).toBe(seat)
+    expect(seat?.contains(input)).toBe(true)
+    expect(input?.getAttribute('aria-label')).toBe(hint)
+    // The composer seat offers no pending interaction, so no request card can replace the input card.
+    expect(b.chainOwners.some(owner => owner.pendingInteraction === undefined)).toBe(true)
+  })
+
+  it('renders no pending seat while nothing waits', () => {
+    const b = mount(sessionSnapshotOf())
+    expect(b.view.container.querySelector('[data-pending-seat]')).toBeNull()
+    expect(b.chainOwners.every(owner => owner.pendingInteraction === undefined)).toBe(true)
   })
 
   it('hero phase: keeps sidebar controls accessible while hiding conversation chrome', () => {

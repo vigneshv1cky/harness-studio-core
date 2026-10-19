@@ -170,5 +170,10 @@ describe('apply', () => {
     // A RUNNING parent-offline continuable yields the default composer, whose
     // disabled input still carries the primary Stop; stopped, it takes back over.
     expect(select(owner({ address, parentAvailable: false }, true))).toBeNull()
+    // The conversation's pending-request card is never replaced by the notice.
+    expect(select({
+      ...owner({ address: { ...address, mode: 'one-shot' }, parentAvailable: true }),
+      pendingInteraction: { kind: 'approval', key: 'a', sessionId: address.childSessionId },
+    } as ComposerChainProps)).toBeNull()
   })
 })

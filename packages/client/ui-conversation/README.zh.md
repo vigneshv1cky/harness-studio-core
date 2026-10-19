@@ -160,7 +160,7 @@ try {
 }
 ```
 
-selector 必须是 owner currency 的纯函数。非 null 返回值作为 `matched` 传给组件；`PropsRuntime<'conversation.composer'>` 提供标准 Session 与 global props。Chain 顺序仍按 `priority` 升序，再按注册顺序；首个返回非 null 的 selector 获选。Shell 会在 takeover 下保持默认 composer 挂载。Request 状态、listener、response encoding 和任何 request-specific child slot 都属于业务 package，不进入 `SessionSnapshot`，也不由 core 包声明。
+selector 必须是 owner currency 的纯函数。非 null 返回值作为 `matched` 传给组件；`PropsRuntime<'conversation.composer'>` 提供标准 Session 与 global props。Chain 顺序仍按 `priority` 升序，再按注册顺序；首个返回非 null 的 selector 获选。Shell 渲染该 chain 两次。在 composer 座位中 owner 不携带 pending interaction，获选项替换输入卡片并让其保持挂载；在 transcript 之后 owner 携带 Session 的 pending interaction，获选项把该请求的卡片显示在对话流中、可用的输入卡片之上，新请求出现时对话滚动到末尾。当 pending interaction 声明 `composerReply` 时，发送的消息交给该 interaction 而不是 agent：`answer` 把文本作为用户的回答，`hold` 把消息留在 composer 中并给出提示。空 composer 的占位提示会指出正在等待的请求。Request 状态、listener、response encoding 和任何 request-specific child slot 都属于业务 package，不进入 `SessionSnapshot`，也不由 core 包声明。
 
 `InputActions.captureInsertion()` 捕获草稿选区与版本；`insertText(text, span)` 仅在版本未变且编辑器允许编辑时，插入一次可撤销的纯文本编辑。异步消费者在插入被拒绝后负责保留结果，等待用户操作。
 

@@ -536,8 +536,7 @@ describe('PendingQuestion domain face', () => {
     fireEvent.click(screen.getByLabelText(zh['nav.maximize']))
     const custom = screen.getByPlaceholderText(zh['custom.placeholder'])
     fireEvent.change(custom, { target: { value: '要能独立排查线上问题' } })
-    // Re-expanding must not steal focus back into the textarea: it was
-    // autofocused on first presentation, so focus stays on the expand toggle.
+    // The card never takes focus: the composer keeps the keyboard.
     expect(document.activeElement).not.toBe(custom)
     fireEvent.click(screen.getByLabelText('下一题'))
     fireEvent.click(screen.getByRole('checkbox', { name: '系统设计' }))
@@ -735,7 +734,7 @@ describe('timed card', () => {
     const hide = vi.fn()
     answer.mockResolvedValueOnce(true).mockRejectedValueOnce(new Error('a reply is already queued for this question'))
     carrier.attachRpc({ answer })
-    carrier.attachSeat({ hide })
+    carrier.attachSeat({ hide, typedReplyRefusal: () => '' })
     carrier.setState('continued')
     render(<QuestionComposer matched={carrier} {...kit} />)
 
@@ -759,7 +758,7 @@ describe('timed card', () => {
     const carrier = new PendingQuestion(SID, TIMED, ToolCallId('ask-stale-channel'))
     const hide = vi.fn()
     carrier.attachRpc({ answer: vi.fn(async () => true) })
-    carrier.attachSeat({ hide })
+    carrier.attachSeat({ hide, typedReplyRefusal: () => '' })
     carrier.setState('continued')
     const rendered = { ...carrier.snapshot(), state: 'open' as const, channel: 'waterfall' as const }
     const useQuestionCard = ((_key: string, selector?: (value: QuestionCardSnapshot | undefined) => unknown) =>
@@ -778,7 +777,7 @@ describe('timed card', () => {
     const answer = vi.fn(async () => true)
     const hide = vi.fn()
     carrier.attachRpc({ answer })
-    carrier.attachSeat({ hide })
+    carrier.attachSeat({ hide, typedReplyRefusal: () => '' })
     carrier.setState('continued')
     render(<QuestionComposer matched={carrier} {...kit} />)
 
@@ -796,7 +795,7 @@ describe('timed card', () => {
   it('closing a card-keyed panel with no channel left still just withdraws it', () => {
     const carrier = new PendingQuestion(SID, TIMED, ToolCallId('ask-gap'))
     const hide = vi.fn()
-    carrier.attachSeat({ hide })
+    carrier.attachSeat({ hide, typedReplyRefusal: () => '' })
     render(<QuestionComposer matched={carrier} {...kit} />)
 
     fireEvent.click(screen.getByLabelText('收起问题面板，可从工具调用重新打开'))
@@ -849,7 +848,7 @@ const RECORDED_CUSTOM: readonly AskUserQuestionAnswerItem[] = [
 function reviewCard(review: readonly AskUserQuestionAnswerItem[] = RECORDED) {
   const carrier = new PendingQuestion(SID, QUESTIONS, ToolCallId(REVIEWED_CALL), undefined, review)
   const hide = vi.fn()
-  carrier.attachSeat({ hide })
+  carrier.attachSeat({ hide, typedReplyRefusal: () => '' })
   return { carrier, hide }
 }
 
@@ -935,5 +934,50 @@ describe('review card', () => {
     fireEvent.click(screen.getByLabelText(en['nav.next']))
     fireEvent.click(screen.getByLabelText(en['nav.next']))
     expect(screen.getByText(en['review.skipped'])).toBeTruthy()
+  })
+})
+
+describe('composer text', () => {
+  const typed = (carrier: PendingQuestion, text: string): Promise<void> => {
+    const reply = carrier.composerReply
+    if (reply === undefined) throw new Error('the card claims no composer text')
+    return reply.answer(text)
+  }
+
+  it('answers the question on screen as its free-text answer and moves on', async () => {
+    const { carrier, answer } = wait()
+    render(<QuestionComposer matched={carrier} {...kit} />)
+
+    await act(async () => { await typed(carrier, '全栈也可以') })
+    // The first question takes the text instead of its recommended choice; the card moves to the second.
+    expect(screen.getByText('2 / 3')).toBeTruthy()
+    await act(async () => { await typed(carrier, '要能独立排查线上问题') })
+    expect(screen.getByText('3 / 3')).toBeTruthy()
+    fireEvent.click(screen.getByRole('checkbox', { name: '系统设计' }))
+    await act(async () => { await typed(carrier, '沟通') })
+    expect(answer).toHaveBeenCalledWith(answerBatch([
+      { id: 'profile', selected: [], custom: '全栈也可以' },
+      { id: 'detail', selected: [], custom: '要能独立排查线上问题' },
+      // A multi-select keeps its checked labels beside the text.
+      { id: 'signals', selected: ['系统设计'], custom: '沟通' },
+    ]))
+  })
+
+  it('submits a single question at once', async () => {
+    const { carrier, answer } = wait([QUESTIONS[1]!])
+    render(<QuestionComposer matched={carrier} {...kit} />)
+
+    await act(async () => { await typed(carrier, '尽快') })
+    expect(answer).toHaveBeenCalledWith(answerBatch([{ id: 'detail', selected: [], custom: '尽快' }]))
+  })
+
+  it('refuses text while no presentation of the card is mounted', async () => {
+    const { carrier } = wait()
+    carrier.attachSeat({ hide: () => {}, typedReplyRefusal: () => zh['reply.onCard'] })
+    await expect(typed(carrier, '答案')).rejects.toThrow(zh['reply.onCard'])
+  })
+
+  it('leaves a read-only review card out of the composer', () => {
+    expect(reviewCard().carrier.composerReply).toBeUndefined()
   })
 })

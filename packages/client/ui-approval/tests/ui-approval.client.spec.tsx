@@ -169,6 +169,10 @@ describe('PendingApproval', () => {
     await expect(pending.result).rejects.toThrow('approval request was aborted')
   })
 
+  it('holds composer messages until the request is decided', () => {
+    expect(new PendingApproval(id('s1'), { toolName: 'write' }).composerReply).toEqual({ kind: 'hold' })
+  })
+
   it('rejects an unanswered request explicitly without an AbortSignal', async () => {
     const pending = new PendingApproval(id('s1'), { toolName: 'write' })
     const reason = new Error('scope released')

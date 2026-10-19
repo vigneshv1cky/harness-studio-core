@@ -86,6 +86,8 @@ export class PendingApproval {
   readonly displayReason: ApprovalPresentationRequest['displayReason']
   /** Result returned by the Remote Event listener to the Host waterfall. */
   readonly result: Promise<ApprovalDecision>
+  /** A composer message waits until the request is decided; typing never decides it. */
+  readonly composerReply = { kind: 'hold' } as const
 
   readonly #resolve: (outcome: ApprovalDecision) => void
   readonly #reject: (reason: unknown) => void

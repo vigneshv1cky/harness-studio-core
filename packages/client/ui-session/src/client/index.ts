@@ -45,7 +45,23 @@ export interface SessionPendingInteractionBase {
   readonly kind: string
   /** Session whose UI can answer this interaction. */
   readonly sessionId: SessionId
+  /**
+   * What a message sent from the composer does while this interaction is the
+   * Session's visible one. Absent, the composer sends as usual.
+   */
+  readonly composerReply?: PendingComposerReply | undefined
 }
+
+/**
+ * Composer behaviour claimed by a visible pending interaction. `answer` hands
+ * the sent text to the interaction as the user's own answer; it rejects with a
+ * user-facing message when the text cannot answer it, and the composer keeps
+ * the text. `hold` keeps every message in the composer until the interaction
+ * is decided.
+ */
+export type PendingComposerReply =
+  | { readonly kind: 'answer'; answer(text: string): Promise<void> }
+  | { readonly kind: 'hold' }
 
 /** Declaration-merged map of domain keys to their pending-interaction values. */
 export interface SessionPendingInteractionMap {}

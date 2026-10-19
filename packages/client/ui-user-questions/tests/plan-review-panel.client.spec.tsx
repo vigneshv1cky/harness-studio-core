@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { allowAllAccess } from '@deepseek-ai/dsh-client-test-runtime'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
@@ -304,7 +304,7 @@ describe('PlanReviewPanel', () => {
     const answer = vi.fn(async () => true)
     const hide = vi.fn()
     carrier.attachRpc({ answer })
-    carrier.attachSeat({ hide })
+    carrier.attachSeat({ hide, typedReplyRefusal: () => '' })
     carrier.setState('continued')
     render(<QuestionComposer matched={carrier} {...kit} />)
 
@@ -318,7 +318,7 @@ describe('PlanReviewPanel', () => {
     const carrier = new PendingQuestion(SID, questions(), 'continued-plan-hide-error' as ToolCallId)
     const answer = vi.fn(async () => true)
     carrier.attachRpc({ answer })
-    carrier.attachSeat({ hide: () => { throw new Error('hide failed') } })
+    carrier.attachSeat({ hide: () => { throw new Error('hide failed') }, typedReplyRefusal: () => '' })
     carrier.setState('continued')
     render(<QuestionComposer matched={carrier} {...kit} />)
 
@@ -335,6 +335,49 @@ describe('PlanReviewPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: zh['plan.discuss'] }))
     expect(cancel).toHaveBeenCalledWith()
     expect(answer).not.toHaveBeenCalled()
+  })
+
+  it('keeps the card and focuses the composer inside a conversation', () => {
+    const { carrier, cancel, answer } = wait()
+    const conversation = document.createElement('div')
+    conversation.dataset.conversationContent = ''
+    const seat = document.createElement('div')
+    seat.dataset.composerSeat = ''
+    const composer = document.createElement('div')
+    composer.dataset.composerInput = ''
+    composer.tabIndex = 0
+    seat.append(composer)
+    const pendingSeat = document.createElement('div')
+    conversation.append(pendingSeat, seat)
+    document.body.append(conversation)
+    try {
+      render(<QuestionComposer matched={carrier} {...kit} />, { container: pendingSeat })
+      fireEvent.click(screen.getByRole('button', { name: zh['plan.discuss'] }))
+      expect(document.activeElement).toBe(composer)
+      expect(cancel).not.toHaveBeenCalled()
+      expect(answer).not.toHaveBeenCalled()
+    } finally {
+      cleanup()
+      conversation.remove()
+    }
+  })
+
+  it('takes composer text as the change request', async () => {
+    const { carrier, answer } = wait()
+    render(<QuestionComposer matched={carrier} {...kit} />)
+
+    await act(async () => { await carrier.composerReply?.answer('先补测试') })
+    expect(answer).toHaveBeenCalledWith({ answers: [{ id: 'plan-review', selected: [], custom: '先补测试' }] })
+  })
+
+  it('keeps the composer text when the change request does not land', async () => {
+    const { carrier, answer } = wait()
+    answer.mockRejectedValue(new Error('question response rejected: not-pending'))
+    render(<QuestionComposer matched={carrier} {...kit} />)
+
+    await act(async () => {
+      await expect(carrier.composerReply?.answer('先补测试')).rejects.toThrow('question response rejected: not-pending')
+    })
   })
 
   it('omits the tooltip for an option carrying no description', () => {
