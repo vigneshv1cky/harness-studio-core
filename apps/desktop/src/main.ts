@@ -1,4 +1,4 @@
-import './studio-identity.ts'
+import { STUDIO_RELEASES_URL } from './studio-identity.ts'
 import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-product-analytics/types'
 import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
@@ -970,7 +970,7 @@ async function main(): Promise<void> {
         click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
       : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
     { type: 'separator' },
-    { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } },
+    { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void shell.openExternal(STUDIO_RELEASES_URL) } },
     ...process.platform === 'darwin' || process.platform === 'win32'
       ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
     { label: currentDesktopLocale().messages.browserSignInMenu, type: 'checkbox', checked: browserSignIn,

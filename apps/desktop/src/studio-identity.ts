@@ -15,3 +15,6 @@ if (app.isPackaged) {
   app.setPath('sessionData', userData)
   if (process.env.DSH_HOME === undefined) process.env.DSH_HOME = join(homedir(), '.harness-studio')
 }
+
+/** Harness Studio publishes no update feed, so Check for Updates opens the public releases instead. */
+export const STUDIO_RELEASES_URL = 'https://github.com/vigneshv1cky/harness-studio/releases'
