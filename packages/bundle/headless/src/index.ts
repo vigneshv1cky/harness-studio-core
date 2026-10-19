@@ -32,6 +32,7 @@ import type {} from '@deepseek-ai/dsh-session-query'
 import type {} from '@deepseek-ai/dsh-subagent'
 import { internals } from './runner-internals.ts'
 import { projectJsonRun, boundJsonLine } from './json-stream.ts'
+import { escapeTerminal, streamChat } from './chat-stream.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'headless-runner'
@@ -140,7 +141,7 @@ function streamReasoning(
           stderr.write('dsh: reasoning:\n')
           open = true
         }
-        stderr.write(chunk.text)
+        stderr.write(escapeTerminal(chunk.text))
         endsWithNewline = chunk.text.endsWith('\n')
         return
       case 'block-start':
@@ -393,7 +394,7 @@ async function run(ctx: Context, config: Config, io: HeadlessIo): Promise<void> 
     await sessions.flush(agent.session)
     if (failure !== undefined) throw failure.error
     const outcome = summarize(agent.session, firstSeq)
-    if (projection === undefined) io.stdout.write(outcome.text + '\n')
+    if (projection === undefined) io.stdout.write(`${internals.stdoutIsTerminal() ? escapeTerminal(outcome.text) : outcome.text}\n`)
     else projection.finish(outcome.text)
     if (outcome.reason?.kind === 'error') {
       io.stderr.write(`dsh: ${outcome.reason.error.code}: ${outcome.reason.error.message}\n`)
@@ -412,8 +413,10 @@ async function run(ctx: Context, config: Config, io: HeadlessIo): Promise<void> 
  * @param config - validated task and run options.
  */
 /**
- * Harness Studio: a chat in the terminal. Each line typed is one turn in the same Session, answered on stdout with
- * reasoning on stderr, as a one-task run prints. Ctrl-C stops the reply in progress, or quits at the prompt; Ctrl-D
+ * Harness Studio: a chat in the terminal. Each line typed is one turn in the same Session. The answer streams to
+ * stdout as it is written, reasoning to stderr, and each tool call and result takes one stderr line (chat-stream.ts);
+ * when stdout is not a terminal the answer prints when the turn ends. Ctrl-C stops the reply in progress, or quits at
+ * the prompt; Ctrl-D
  * or `/exit` quits. The Session id is printed at the end so `--session-id` can continue it.
  * @param ctx - the runner's context.
  * @param config - the runner config; `sessionId` continues an existing Session.
@@ -454,7 +457,8 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
       continue
     }
     const firstSeq = agent.session.seq
-    const stopReasoning = streamReasoning(ctx, agent, io.stderr)
+    const live = internals.stdoutIsTerminal()
+    const stream = streamChat(ctx, agent, io, { liveText: live })
     replying = true
     try {
       agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
@@ -465,11 +469,12 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
       }
     } finally {
       replying = false
-      stopReasoning()
+      stream.dispose()
     }
     await sessions.flush(agent.session)
     const outcome = summarize(agent.session, firstSeq)
-    if (outcome.text !== '') io.stdout.write(`${outcome.text}\n\n`)
+    if (stream.printed()) io.stdout.write('\n')
+    else if (outcome.text !== '') io.stdout.write(`${live ? escapeTerminal(outcome.text) : outcome.text}\n\n`)
     if (outcome.reason?.kind === 'error') io.stderr.write(`dsh: ${outcome.reason.error.code}: ${outcome.reason.error.message}\n`)
     else if (outcome.reason?.kind === 'aborted') io.stderr.write('dsh: stopped\n')
     input.prompt()
@@ -488,5 +493,6 @@ export function apply(ctx: Context, config: Config): void {
     throw new Error('headless-runner: the launcher must provide ctx.appExit before the tree mounts')
   }
   const io: HeadlessIo = { stdout: internals.stdout, stderr: internals.stderr, exit }
-  void (config.chat === true ? chat(ctx, config, io) : run(ctx, config, io)).catch((error: unknown) => { fail(io, error, config.json === true) })
+  const started = config.chat === true ? chat(ctx, config, io) : run(ctx, config, io)
+  void started.catch((error: unknown) => { fail(io, error, config.json === true) })
 }

@@ -23,9 +23,12 @@ export const internals: {
   stderr: { write(chunk: string): unknown }
   readStdin: () => Promise<string>
   openChat: () => ChatInput
+  /** Whether stdout is a terminal, so printed model text must be escaped and the chat may stream its answer. */
+  stdoutIsTerminal: () => boolean
 } = {
   stdout: process.stdout,
   stderr: process.stderr,
+  stdoutIsTerminal: () => process.stdout.isTTY === true,
   readStdin: async () => {
     const chunks: Buffer[] = []
     for await (const chunk of process.stdin as AsyncIterable<Buffer>) chunks.push(chunk)

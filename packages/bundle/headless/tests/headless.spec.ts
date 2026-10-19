@@ -49,6 +49,8 @@ interface BenchOptions {
   json?: boolean
   /** Run the chat mode over these typed lines instead of one task. */
   chatLines?: string[]
+  /** Report stdout as a terminal, so the chat streams its answer. */
+  terminal?: boolean
   observe?: () => Promise<ObservationStub>
   /** Leave the query service unmounted to exercise the fail-loud path. */
   omitSessionQuery?: boolean
@@ -213,6 +215,7 @@ async function bench(script: Script, options: BenchOptions = {}): Promise<{
       ctx.on('session/flush', () => { order.push('flush') })
       internals.stdout = { write: (chunk: string) => { out += chunk; return true } }
       internals.stderr = { write: (chunk: string) => { err += chunk; return true } }
+      internals.stdoutIsTerminal = () => options.terminal === true
       if (options.readStdin !== undefined) internals.readStdin = options.readStdin
       if (options.chatLines !== undefined) {
         const lines = options.chatLines
@@ -260,6 +263,137 @@ describe('headless runner', () => {
     expect(result.err).toMatch(/\nSession session-[0-9a-f-]+; continue it with --session-id session-[0-9a-f-]+\n$/)
     expect(result.order).toEqual(['prompt', 'flush', 'prompt', 'prompt', 'flush', 'prompt', 'flush', 'exit'])
     expect(turn).toBe(2)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('streams the chat answer live with one line per tool call and result, escaping control characters', async () => {
+    const source = { provider: 'test-provider', model: 'test-model' }
+    const test = await bench({
+      async afterPrompt(session, message, agent) {
+        await Promise.resolve()
+        session.append('turn/start', { turn: 1 })
+        session.append('step/start', { turn: 1, step: 1 })
+        session.append('user/message', message, { surfaceOp: 'append' })
+        startFrames(agent, 1, 1)
+        emitChunk(agent, { type: 'reasoning-delta', index: 0, text: 'plan\u001b[2J\n' })
+        emitChunk(agent, { type: 'text-delta', index: 1, text: 'Looking' })
+        emitChunk(agent, { type: 'text-delta', index: 1, text: ' now.\u001b]52;c;aGk=\u0007' })
+        session.append('assistant/message', {
+          stream: [], turn: 1, step: 1,
+          message: createAssistantMessage({ content: [{ type: 'text', text: 'Looking now.' }], source }),
+        }, { surfaceOp: 'append' })
+        session.append('tool/call', {
+          turn: 1, step: 1, callId: ToolCallId('call-1'), name: 'bash', arguments: '{"command":"ls -la","description":"List files"}',
+        })
+        session.append('tool/result', {
+          turn: 1, step: 1,
+          message: createToolResultMessage({ callId: ToolCallId('call-1'), content: [{ type: 'text', text: 'a.txt' }], isError: false }),
+        }, { surfaceOp: 'append' })
+        session.append('tool/call', {
+          turn: 1, step: 1, callId: ToolCallId('call-2'), name: 'read', arguments: '{"file_path":"/nope.txt"}',
+        })
+        session.append('tool/result', {
+          turn: 1, step: 1,
+          message: createToolResultMessage({ callId: ToolCallId('call-2'), content: [{ type: 'text', text: '\nENOENT: no such file\n  at read' }], isError: true }),
+        }, { surfaceOp: 'append' })
+        session.append('step/end', { turn: 1, step: 1 })
+        session.append('step/start', { turn: 1, step: 2 })
+        startFrames(agent, 1, 2)
+        emitChunk(agent, { type: 'text-delta', index: 0, text: 'Found a.txt.' })
+        session.append('assistant/message', {
+          stream: [], turn: 1, step: 2,
+          message: createAssistantMessage({ content: [{ type: 'text', text: 'Found a.txt.' }], source }),
+        }, { surfaceOp: 'append' })
+        session.append('step/end', { turn: 1, step: 2 })
+        session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      },
+    }, { chatLines: ['list files', '/exit'], terminal: true })
+    const result = await test.run()
+    expect(result.out).toBe('Looking now.\\x1b]52;c;aGk=\\x07\nFound a.txt.\n\n')
+    expect(result.err).toContain('dsh: reasoning:\nplan\\x1b[2J\n')
+    expect(result.err).toContain('• bash List files\n  ✓ bash\n• read /nope.txt\n  ✗ read: ENOENT: no such file\n')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('with stdout not a terminal, prints the chat answer at the end of the turn and keeps tool lines live', async () => {
+    const test = await bench({
+      async afterPrompt(session, message, agent) {
+        await Promise.resolve()
+        session.append('turn/start', { turn: 1 })
+        session.append('step/start', { turn: 1, step: 1 })
+        session.append('user/message', message, { surfaceOp: 'append' })
+        startFrames(agent, 1, 1)
+        emitChunk(agent, { type: 'block-start', index: 0, blockType: 'reasoning' })
+        emitChunk(agent, { type: 'reasoning-delta', index: 0, text: '' })
+        emitChunk(agent, { type: 'reasoning-delta', index: 0, text: 'thinking' })
+        emitChunk(agent, { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'thinking' } })
+        // Another Session's output is not this chat's.
+        const other = test.ctx.sessions.create()
+        test.ctx.emit('agent/assistant-stream', {
+          agent: { session: other } as Agent,
+          frame: { type: 'start', attemptId: LlmAttemptId('other'), revision: 1, turn: 1, step: 1 },
+        })
+        other.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('other-call'), name: 'bash', arguments: '{}' })
+        emitChunk(agent, { type: 'reasoning-delta', index: 1, text: 'again' })
+        emitChunk(agent, { type: 'block-start', index: 2, blockType: 'text' })
+        emitChunk(agent, { type: 'reasoning-delta', index: 3, text: 'more' })
+        emitChunk(agent, { type: 'text-delta', index: 4, text: '' })
+        emitChunk(agent, { type: 'text-delta', index: 4, text: 'not live' })
+        emitChunk(agent, { type: 'block-end', index: 4, block: { type: 'text', text: 'not live' } })
+        emitChunk(agent, { type: 'reasoning-delta', index: 5, text: 'then a call' })
+        emitChunk(agent, { type: 'tool-call-delta', index: 6, callId: ToolCallId('c'), name: 'bash', argumentsDelta: '{}' })
+        emitChunk(agent, { type: 'reasoning-delta', index: 7, text: 'last\n' })
+        emitChunk(agent, { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } })
+        emitChunk(agent, { type: 'finish', reason: 'stop' })
+        emitChunk(agent, { type: 'reasoning-delta', index: 8, text: 'trailing' })
+        const state = frameStates.get(agent)
+        if (state !== undefined) {
+          agent.ctx.emit('agent/assistant-stream', {
+            agent, frame: { type: 'end', attemptId: state.attemptId, revision: ++state.revision, index: state.index, outcome: { kind: 'abandoned' } },
+          })
+        }
+        session.append('assistant/message', {
+          stream: [], turn: 1, step: 1,
+          message: createAssistantMessage({ content: [{ type: 'text', text: 'Answer at the end.' }], source: { provider: 'test-provider', model: 'test-model' } }),
+        }, { surfaceOp: 'append' })
+        session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('call-3'), name: 'todo_write', arguments: '{"items":[]}' })
+        session.append('tool/result', {
+          turn: 1, step: 1,
+          message: createToolResultMessage({ callId: ToolCallId('call-unknown'), content: [{ type: 'image', data: 'x', mimeType: 'image/png' }], isError: true }),
+        }, { surfaceOp: 'append' })
+        session.append('step/end', { turn: 1, step: 1 })
+        session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      },
+    }, { chatLines: ['go'] })
+    const result = await test.run()
+    expect(result.out).toBe('Answer at the end.\n\n')
+    expect(result.err).toContain('dsh: reasoning:\nthinkingagain\ndsh: reasoning:\nmore\ndsh: reasoning:\nthen a call\ndsh: reasoning:\nlast\ndsh: reasoning:\ntrailing\n')
+    expect(result.err).toContain('• todo_write\n  ✗ tool: failed\n')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('marks a retried step whose first attempt already printed text', async () => {
+    const test = await bench({
+      async afterPrompt(session, message, agent) {
+        await Promise.resolve()
+        session.append('turn/start', { turn: 1 })
+        session.append('step/start', { turn: 1, step: 1 })
+        session.append('user/message', message, { surfaceOp: 'append' })
+        startFrames(agent, 1, 1)
+        emitChunk(agent, { type: 'text-delta', index: 0, text: 'Partial' })
+        startFrames(agent, 1, 1)
+        emitChunk(agent, { type: 'text-delta', index: 0, text: 'Full answer.' })
+        session.append('assistant/message', {
+          stream: [], turn: 1, step: 1,
+          message: createAssistantMessage({ content: [{ type: 'text', text: 'Full answer.' }], source: { provider: 'test-provider', model: 'test-model' } }),
+        }, { surfaceOp: 'append' })
+        session.append('step/end', { turn: 1, step: 1 })
+        session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      },
+    }, { chatLines: ['go'], terminal: true })
+    const result = await test.run()
+    expect(result.out).toBe('Partial\nFull answer.\n\n')
+    expect(result.err).toContain('(retrying)\n')
     await test.ctx.fiber.dispose()
   })
 
