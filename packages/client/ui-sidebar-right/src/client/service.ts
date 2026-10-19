@@ -179,6 +179,28 @@ export interface SidebarRightOpenTabOptions<K extends string = string> extends S
 /** The scheme every resource address carries; anything else is not a resource this face opens. */
 const RESOURCE_SCHEME = 'dsh-resource://'
 
+/** One resource open offered to a {@link SidebarRightResourceHandler}. */
+export interface SidebarRightResourceRequest {
+  /** The Session the resource opens in. */
+  readonly sessionId: SessionId
+  /** The `dsh-resource://` address being opened. */
+  readonly address: string
+  /** The opener's navigation parameters for the resource. */
+  readonly params: SidebarRightResourceParams | undefined
+  /**
+   * Open a page type in the request's Session instead; see `ISidebarRight.openTab`.
+   * @param kind - the page type's kind.
+   * @param options - placement and that kind's navigation parameters.
+   */
+  openTab<K extends string>(kind: K, options?: SidebarRightOpenTabOptions<K>): void
+}
+
+/**
+ * Take over opening a resource, such as a Files tab that shows a file beside its tree instead of a tab of the type
+ * that claims the address. Returns `true` when it opened the resource; no tab is then placed for the address.
+ */
+export type SidebarRightResourceHandler = (request: SidebarRightResourceRequest) => boolean
+
 /** Synchronous close/replacement hook; resource owners retain any background cleanup. */
 export type SidebarRightCloseHandler = (sessionId: SessionId, tab: TabRecord) => void
 
@@ -267,6 +289,18 @@ export class SidebarRightController implements ISidebarRight {
   private readonly adopted: ReadonlyMap<SessionId, Adoption>
   private readonly rooms: ReadonlyMap<SessionId, RoomRule>
   private readonly closeHandlers = new Map<string, SidebarRightCloseHandler>()
+  private readonly resourceHandlers = new Set<SidebarRightResourceHandler>()
+
+  /**
+   * Offer resource opens without an explicit `kind` to a handler before a tab type claims them. Handlers are asked
+   * in registration order; the first to return `true` ends the open. An open that names `kind` skips handlers.
+   * @param handler - decides synchronously and opens what it takes.
+   * @returns an effect-scoped unregister callback.
+   */
+  registerResourceHandler(handler: SidebarRightResourceHandler): () => void {
+    this.resourceHandlers.add(handler)
+    return () => { this.resourceHandlers.delete(handler) }
+  }
 
   /**
    * Register resource cleanup before explicit removal. Failure preserves the tab.
@@ -390,6 +424,14 @@ export class SidebarRightController implements ISidebarRight {
   ): void {
     if (!address.startsWith(RESOURCE_SCHEME)) {
       throw new Error(`sidebarRight: no registered tab type claims "${address}"`)
+    }
+    if (options.kind === undefined) {
+      const openTab = <K extends string>(kind: K, tabOptions: SidebarRightOpenTabOptions<K> = {}): void => {
+        this.placeTab(sessionId, actions, kind, tabOptions)
+      }
+      for (const handler of this.resourceHandlers) {
+        if (handler({ sessionId, address, params: options.params, openTab })) return
+      }
     }
     this.place(sessionId, actions, this.tabs.claim(address, options.kind), address, options, options.params)
   }

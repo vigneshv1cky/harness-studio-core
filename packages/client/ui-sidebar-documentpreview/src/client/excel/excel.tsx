@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Workbook } from '@fortune-sheet/react'
 import { Button, IconWarningTriangleOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import fortuneCss from '@fortune-sheet/react/dist/index.css?inline'
+import type { Cell } from '@fortune-sheet/core'
 import type { ExcelFormat } from './format.ts'
 import type { ExcelPreview } from './model.ts'
 import type { LoadedExcelBodyProps } from './LazyExcelBody.tsx'
@@ -10,6 +11,39 @@ import { parseExcel } from './parse.ts'
 import css from './ExcelBody.module.css'
 
 type State = { data: Uint8Array<ArrayBuffer>; format: ExcelFormat } & ({ value: ExcelPreview } | { error: string })
+
+/**
+ * Font for cells that name none. FortuneSheet would draw them in Times New Roman; spreadsheet applications show
+ * their sans-serif default, and plain cells usually inherit it without naming it.
+ */
+const DEFAULT_CELL_FONT = 'system-ui'
+
+/** One rich-text run of a cell. */
+type InlineRun = NonNullable<NonNullable<Cell['ct']>['s']>[number]
+
+/**
+ * Prepare cells for display: every cell is centred horizontally and vertically, whatever alignment the workbook
+ * stores, and every cell and rich-text run without a font name gets the default sans-serif font.
+ * @param preview - parsed workbook.
+ * @returns the same workbook with alignment and font names set.
+ */
+function withDefaultFont(preview: ExcelPreview): ExcelPreview {
+  return {
+    ...preview,
+    sheets: preview.sheets.map(sheet => (sheet.celldata === undefined ? sheet : {
+      ...sheet,
+      celldata: sheet.celldata.map((item) => {
+        const v = item.v
+        if (v === null || v === undefined) return item
+        const runs = v.ct?.s?.map((run: InlineRun) => (run.ff === undefined ? { ...run, ff: DEFAULT_CELL_FONT } : run))
+        return {
+          ...item,
+          v: { ...v, ht: 0, vt: 0, ...(v.ff === undefined ? { ff: DEFAULT_CELL_FONT } : {}), ...(runs === undefined || v.ct === undefined ? {} : { ct: { ...v.ct, s: runs } }) },
+        }
+      }),
+    })),
+  }
+}
 const scopedStyles = `@scope ([data-excel-preview]) { ${fortuneCss} }`
 
 /**
@@ -28,7 +62,7 @@ export function ExcelBody({ content, format, limits, t, loading }: LoadedExcelBo
     const controller = new AbortController()
     setState(undefined)
     void parseExcel(data, format, limits, controller.signal).then(
-      (value) => { if (!controller.signal.aborted) setState({ data, format, value }) },
+      (value) => { if (!controller.signal.aborted) setState({ data, format, value: withDefaultFont(value) }) },
       (error: unknown) => { if (!controller.signal.aborted) setState({ data, format, error: error instanceof Error ? error.message : 'invalid' }) },
     )
     return () => { controller.abort() }

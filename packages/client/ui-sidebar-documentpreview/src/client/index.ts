@@ -20,8 +20,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type {} from '@deepseek-ai/dsh-api-gateway/client'
 import type {} from '@deepseek-ai/dsh-api-workspace-files/remote'
 import type { WorkspaceFileParams } from '@deepseek-ai/dsh-api-workspace-files/client'
-import { TextPreview } from './TextPreview.tsx'
-import type { TextPreviewInjected } from './TextPreview.tsx'
+import type { SlotHookFactory } from '@deepseek-ai/dsh-client-ui-slots'
+import type { UseSidebarRightTabInfo } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+import type { TextStore } from './store.ts'
+import { TextPreview, TextPreviewTab } from './TextPreview.tsx'
+import type { DocumentPreviewInput, TextPreviewInjected } from './TextPreview.tsx'
 import { TextTitle } from './TextTitle.tsx'
 import { TEXTPREVIEW_ID, textDefinition } from './definition.ts'
 import { textFace } from './face.ts'
@@ -44,7 +47,7 @@ import { Config } from '../config.ts'
 // surface is `apply`, `inject`, and the store factory another registration may
 // share, plus the types a consumer of the seat or the store names.
 export type { SidebarDocumentPreviewKey } from './locales.ts'
-export type { TextPreviewProps } from './TextPreview.tsx'
+export type { DocumentPreviewInput, TextPreviewProps } from './TextPreview.tsx'
 export type { TextInjected } from './face.ts'
 export type { ReadDocumentBytes, DocumentFileBytes, ReadWorkspaceFilePage, SessionFile, WorkspaceFilesReadRemote } from './rpc.ts'
 export type { TextPage, TextState, TextStore, TextTabState } from './store.ts'
@@ -69,6 +72,27 @@ declare module '@deepseek-ai/dsh-client-ui-sidebar-right/client' {
 }
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotFactoryMap {
+    /**
+     * One file's preview: its path header, viewer choice and controls, and the selected document body. The text
+     * type's tab body shows it for its own tab; another tab's body, such as a Files tab beside its tree, can show it
+     * for the file it selects (see {@link DocumentPreviewInput}).
+     */
+    'sidebar.right.document.preview': {
+      scope: 'session'
+      props: DocumentPreviewInput
+      children: {
+        'sidebar.right.tab.document': { kind: 'keyed'; scope: 'session'; inject: { hooks: { tabInfo: SlotHookFactory<'sidebar.right.tab.document', UseSidebarRightTabInfo> } } }
+        'sidebar.right.tab.document.actions': { kind: 'list'; scope: 'session' }
+        'sidebar.right.tab.document.unpreviewable': { kind: 'list'; scope: 'session' }
+        'sidebar.right.tab.document.action': { kind: 'keyed'; scope: 'session'; inject: { hooks: { tabInfo: SlotHookFactory<'sidebar.right.tab.document', UseSidebarRightTabInfo> } } }
+      }
+      store: TextStore
+      inject: TextPreviewInjected
+      locale: 'sidebarDocumentPreview'
+    }
+  }
+
   interface LocaleNamespaceMap {
     /** Text-preview progress, paging, change, control, and failure lines. */
     sidebarDocumentPreview: import('./locales.ts').SidebarDocumentPreviewKey
@@ -100,20 +124,21 @@ export function apply(ctx: ClientContext): void {
     ctx.resources,
   )
   const source = { getSnapshot: previews.getSnapshot, subscribe: previews.subscribe }
-  ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register(
-    {
-      name: 'sidebar.right.pane.tab', key: TEXTPREVIEW_ID, locale: NS, store,
-      children: {
-        'sidebar.right.tab.document': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: documentTabInfoFactory } } },
-        'sidebar.right.tab.document.actions': { kind: 'list', scope: 'session' },
-        'sidebar.right.tab.document.unpreviewable': { kind: 'list', scope: 'session' },
-        'sidebar.right.tab.document.action': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: documentTabInfoFactory } } },
-      },
-      inject: (sessionId, actions): TextPreviewInjected => ({
-        ...face(sessionId, actions), hooks: { documentPreviews: source },
-      }),
+  ctx.effect(() => ctx.slots.registerFactory({
+    name: 'sidebar.right.document.preview', scope: 'session', locale: NS, store,
+    children: {
+      'sidebar.right.tab.document': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: documentTabInfoFactory } } },
+      'sidebar.right.tab.document.actions': { kind: 'list', scope: 'session' },
+      'sidebar.right.tab.document.unpreviewable': { kind: 'list', scope: 'session' },
+      'sidebar.right.tab.document.action': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: documentTabInfoFactory } } },
     },
-    TextPreview,
+    inject: (sessionId, actions): TextPreviewInjected => ({
+      ...face(sessionId, actions), hooks: { documentPreviews: source },
+    }),
+  }, TextPreview), 'ui-sidebar-documentpreview: preview factory')
+  ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register(
+    { name: 'sidebar.right.pane.tab', key: TEXTPREVIEW_ID },
+    TextPreviewTab,
   )), 'ui-sidebar-documentpreview: text body')
   ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register(
     { name: 'sidebar.right.pane.tab.title', key: TEXTPREVIEW_ID },

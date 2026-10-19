@@ -13,7 +13,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import clsx from 'clsx'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
-import type { InjectFace, PropsLocale, PropsRenderSlots, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+import type { FactoryComponentPropsOf, PropsRenderFactories, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { UseSidebarRightTabInfo } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import {
   FileTypeIcon, IconNowrapFillRegular, IconPauseOutlineRegular, IconPlayOutlineRegular,
   IconRefreshOutlineRegular, IconWrapFillRegular, Menu, PathLabel, Tooltip, classifyFileType,
@@ -23,7 +24,6 @@ import type { TextInjected } from './face.ts'
 import { emptyFailureRecourse, failureLine } from './failure-line.ts'
 import { LoadingIndicator } from './LoadingIndicator.tsx'
 import { hostFileOf } from './rpc.ts'
-import type { TextStore } from './store.ts'
 import type { DocumentContent } from './document/contract.ts'
 import { binaryDocumentPath, matchingDocumentPreviews } from './document/registry.ts'
 import type { DocumentPreviewDefinition } from './document/registry.ts'
@@ -61,23 +61,40 @@ export interface TextPreviewInjected extends TextInjected {
   readonly hooks: { readonly documentPreviews: ObservableSnapshot<readonly DocumentPreviewDefinition[]> }
 }
 
+/** The preview Factory's caller input: tab information for the file shown. */
+export interface DocumentPreviewInput {
+  /**
+   * Read the shown file's tab information. The right Sidebar passes its own tab's reader; a host that embeds the
+   * preview passes its tab's information with the shown file's `id`, `contentId`, `title`, `navigation`, `signal`
+   * and command binding. The `id` keys the preview's per-file state, which ends when `signal` aborts.
+   */
+  readonly useTabInfo: UseSidebarRightTabInfo
+  /** Path the header shows in place of the Host's absolute path, such as one relative to the host's own folder. */
+  readonly displayPath?: string | undefined
+}
+
 /** The body's composed props: the tab, its navigation, the shared store and face, and copy. */
-export type TextPreviewProps =
-  & PropsRuntime<'sidebar.right.pane.tab'>
-  & PropsRenderSlots<'sidebar.right.tab.document' | 'sidebar.right.tab.document.action' | 'sidebar.right.tab.document.actions' | 'sidebar.right.tab.document.unpreviewable'>
-  & PropsStore<TextStore>
-  & InjectFace<TextPreviewInjected>
-  & PropsLocale<'sidebarDocumentPreview'>
+export type TextPreviewProps = FactoryComponentPropsOf<'sidebar.right.document.preview'>
 
 /**
- * The text type's body, registered under `sidebar.right.pane.tab` as `text`.
+ * The text type's tab body: the preview Factory for this tab's own file.
+ * @param props - the tab's runtime props.
+ * @returns the preview occurrence.
+ */
+export function TextPreviewTab({ useTabInfo, renderFactorySlot }: PropsRuntime<'sidebar.right.pane.tab'> & PropsRenderFactories): ReactNode {
+  return renderFactorySlot('sidebar.right.document.preview', { useTabInfo })
+}
+
+/**
+ * The file preview: the `sidebar.right.document.preview` Factory, shown by the text type's tab body and by hosts
+ * that embed a file preview.
  * @param props - composed slot props.
  * @returns the content read so far with its controls, or a progress line.
  */
 export function TextPreview({
   useTabInfo, useResource, useStore, actions, loadPage, reloadPages,
   loadAll, reloadAll, prepareRenderer, useDocumentPreviews, renderSlot, t,
-  addResource, setResources,
+  addResource, setResources, displayPath: shownPath,
 }: TextPreviewProps): ReactNode {
   const { tab } = useTabInfo()
   const { navigation, signal } = tab
@@ -121,7 +138,7 @@ export function TextPreview({
   const storedScrollTopRef = useRef(0)
   const [menuOpen, setMenuOpen] = useState(false)
   const absolutePath = meta.value?.absolutePath ?? current?.complete?.absolutePath
-  const displayPath = absolutePath ?? file.path
+  const displayPath = shownPath ?? absolutePath ?? file.path
   // Contributions that hand the file to the Host wait for its Host path.
   const fileOwner = absolutePath === undefined ? undefined : { absolutePath }
   // Every tab of this type is a `file` resource address, so its params are the

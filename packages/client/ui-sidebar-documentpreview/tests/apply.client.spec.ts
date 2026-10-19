@@ -17,7 +17,7 @@ import { TEXTPREVIEW_ID, TEXTPREVIEW_KIND } from '../src/client/definition.ts'
 import { apply, inject } from '../src/client/index.ts'
 import { OfficeFontAction } from '../src/client/office/OfficeFontAction.tsx'
 import { OfficeBody } from '../src/client/office/OfficeBody.tsx'
-import { TextPreview } from '../src/client/TextPreview.tsx'
+import { TextPreview, TextPreviewTab } from '../src/client/TextPreview.tsx'
 import { TextTitle } from '../src/client/TextTitle.tsx'
 import { TextBody } from '../src/client/text/TextBody.tsx'
 import { PLAIN_BODY_ID } from '../src/client/text/index.ts'
@@ -38,7 +38,7 @@ import { FILE, SESSION, TAB_ID, byteResult, createResources, page } from './fixt
 
 interface Recorded {
   name: string
-  key: string
+  key?: string
   locale?: string
   store?: unknown
   inject?: unknown
@@ -54,6 +54,11 @@ async function boot() {
   const slots = {
     inject: vi.fn((_name: string, register: () => () => void) => register()),
     register: vi.fn((options: Omit<Recorded, 'component'>, component: unknown) => {
+      const entry: Recorded = { ...options, component }
+      registered.push(entry)
+      return () => { registered.splice(registered.indexOf(entry), 1) }
+    }),
+    registerFactory: vi.fn((options: Omit<Recorded, 'component'>, component: unknown) => {
       const entry: Recorded = { ...options, component }
       registered.push(entry)
       return () => { registered.splice(registered.indexOf(entry), 1) }
@@ -81,7 +86,7 @@ async function boot() {
 }
 
 describe('ui-sidebar-documentpreview apply', () => {
-  it('registers the type, its dictionaries, and the body and title seats under the type\'s id, the body with a store and a face', async () => {
+  it('registers the type, its dictionaries, the preview Factory with a store and a face, and the body and title seats under the type\'s id', async () => {
     const { tabs, registered, dictionaries } = await boot()
     expect(tabs.get(TEXTPREVIEW_KIND)?.priority).toBe('fallback')
     expect(tabs.get(TEXTPREVIEW_KIND)?.id).toBe(TEXTPREVIEW_ID)
@@ -89,7 +94,8 @@ describe('ui-sidebar-documentpreview apply', () => {
     // The seat key is the implementation's id, not the kind: an extension may
     // take the kind over, and the seat must still find this body.
     expect(registered.map(entry => [entry.name, entry.key, entry.locale, entry.component])).toEqual([
-      ['sidebar.right.pane.tab', TEXTPREVIEW_ID, 'sidebarDocumentPreview', TextPreview],
+      ['sidebar.right.document.preview', undefined, 'sidebarDocumentPreview', TextPreview],
+      ['sidebar.right.pane.tab', TEXTPREVIEW_ID, undefined, TextPreviewTab],
       ['sidebar.right.pane.tab.title', TEXTPREVIEW_ID, undefined, TextTitle],
       ['sidebar.right.tab.document', PLAIN_BODY_ID, undefined, TextBody],
       ['sidebar.right.tab.document', MARKDOWN_BODY_ID, 'documentMarkdown', MarkdownBody],

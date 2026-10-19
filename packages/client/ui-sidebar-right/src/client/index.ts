@@ -55,7 +55,7 @@ export type { ExpandButtonProps } from './shell/ExpandButton.tsx'
 export type { SidebarRightState, SurfaceState } from './stores.ts'
 export type {
   ISidebarRight, SidebarRightOpenResourceOptions, SidebarRightOpenTabOptions,
-  SidebarRightPlacement, SidebarRightCloseHandler, SurfaceActions,
+  SidebarRightPlacement, SidebarRightCloseHandler, SidebarRightResourceHandler, SidebarRightResourceRequest, SurfaceActions,
 } from './service.ts'
 export type {
   SidebarRightGuideBox, SidebarRightGuideEntry, SidebarRightTabClaim, SidebarRightTabDefinition,

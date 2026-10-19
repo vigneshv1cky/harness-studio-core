@@ -179,6 +179,31 @@ describe('SidebarRightController — opening', () => {
     expect(titles()).toContain('hex view')
   })
 
+  it('lets a resource handler open an address as a page instead, unless the caller names a kind', () => {
+    const { controller, tabs, publish, titles } = harness()
+    tabs.register({ id: 'test/browse', kind: 'browse', patterns: [], title: () => 'browse' })
+    const seen: unknown[] = []
+    const off = controller.registerResourceHandler((request) => {
+      if (!request.address.startsWith('dsh-resource://file/')) return false
+      seen.push([request.sessionId, request.address, request.params])
+      request.openTab('browse')
+      return true
+    })
+    publish()
+    controller.openResource('dsh-resource://file/session/s-test/notes/readme.txt', { params: { line: 3 } })
+    expect(seen).toEqual([[SESSION, 'dsh-resource://file/session/s-test/notes/readme.txt', { line: 3 }]])
+    expect(titles()).toEqual(['browse'])
+    publish()
+    controller.openResource('dsh-resource://file/session/s-test/notes/readme.txt', { kind: 'text' })
+    expect(titles()).toContain('readme.txt')
+    expect(seen).toHaveLength(1)
+    off()
+    publish()
+    controller.openResource('dsh-resource://file/session/s-test/notes/other.txt')
+    expect(titles()).toContain('other.txt')
+    expect(seen).toHaveLength(1)
+  })
+
   it('lands a new tab in the pane the caller names', () => {
     const { controller, instance, publish, layout, tabOf, expand } = harness()
     expand()
