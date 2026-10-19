@@ -9,6 +9,12 @@ describe('SSH helper policy schema', () => {
     }
   })
 
+  it('admits the client\'s secret-file list and drops it, since its paths name the client\'s computer', () => {
+    const readDeny = { paths: ['/Users/me/.ssh'], except: ['/Users/me/.ssh/known_hosts'], dotenvOutsideWorkspace: true }
+    expect(policySchema.parse({ mode: 'read-only', workspaceRoot: '/w', readDeny, network: { mode: 'off' } })).toEqual({ mode: 'read-only', workspaceRoot: '/w', network: { mode: 'off' } })
+    expect(() => policySchema.parse({ mode: 'read-only', workspaceRoot: '/w', readDeny: { paths: [] } })).toThrow()
+  })
+
   it('still rejects unknown fields and malformed network policies', () => {
     expect(() => policySchema.parse({ mode: 'workspace-write', workspaceRoot: '/w', extra: true })).toThrow()
     expect(() => policySchema.parse({ mode: 'workspace-write', workspaceRoot: '/w', network: { mode: 'sideways' } })).toThrow()

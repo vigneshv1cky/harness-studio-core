@@ -7,7 +7,7 @@
 
 import { mountAgentLoopTestDependencies, provideWorkingDirectoryFixture } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -634,5 +634,51 @@ describe('current working directory', () => {
     } finally {
       await ctx.fiber.dispose()
     }
+  })
+})
+
+// --------------------------------------------------------------------------
+// Secret files the sandbox policy hides are hidden from the file tools too.
+// --------------------------------------------------------------------------
+describe('secret files the sandbox policy hides', () => {
+  let secrets: string
+  beforeEach(async () => {
+    // The workspace (`dir`, the session cwd) and a fake home in a separate temp folder, so the home's
+    // dotenv file is outside the workspace.
+    dir = await realpath(await mkdtemp(join(tmpdir(), 'dsh-tool-fs-secrets-ws-')))
+    secrets = await realpath(await mkdtemp(join(tmpdir(), 'dsh-tool-fs-secrets-home-')))
+    await mkdir(join(secrets, '.aws'))
+    await writeFile(join(secrets, '.aws', 'credentials'), 'AWS-SECRET')
+    await writeFile(join(secrets, '.env'), 'HOME-DOTENV')
+    await writeFile(join(dir, '.env'), 'WORKSPACE-DOTENV')
+    await symlink(join(secrets, '.aws', 'credentials'), join(dir, 'creds-link'))
+    ctx = new Context()
+    provideWorkingDirectoryFixture(ctx)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(LocalFileSystem, { cwd: dir })
+    await ctx.plugin(FsPolicy)
+    // The resolved policy as the policy service would hand it over with protectSecrets on.
+    ctx.provide('sandboxPolicy', {
+      resolve: () => ({ mode: 'workspace-write', workspaceRoot: dir, readDeny: { paths: [join(secrets, '.aws')], except: [], dotenvOutsideWorkspace: true } }),
+    } as never)
+    fiber = await ctx.plugin(ToolFs)
+  })
+  afterEach(async () => {
+    await rm(secrets, { recursive: true, force: true })
+  })
+
+  it('refuses to read a hidden file, through a symlink too, with the denial code and a reason', async () => {
+    for (const path of [join(secrets, '.aws', 'credentials'), 'creds-link', join(secrets, '.env')]) {
+      const result = await call('read', { file_path: path })
+      expect(result.isError).toBe(true)
+      expect(result.error).toMatchObject({ info: { code: 'FS_SANDBOX_DENIED' } })
+      expect(text(result)).toContain('secret file that Harness Studio hides from the agent')
+      expect(text(result)).not.toMatch(/AWS-SECRET|HOME-DOTENV/)
+    }
+  })
+
+  it('still reads the workspace dotenv file', async () => {
+    expect(text(await call('read', { file_path: '.env' }))).toContain('WORKSPACE-DOTENV')
   })
 })

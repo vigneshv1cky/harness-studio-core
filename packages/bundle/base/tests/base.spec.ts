@@ -82,4 +82,24 @@ describe('dsh-base bundle', () => {
     // The platform layer folded into these rows: no separate patch file ships.
     expect(existsSync(resolve(root, 'windows.cordis.patch.yml'))).toBe(false)
   })
+
+  it('hides Harness\'s key store and Harness Studio\'s connector sign-ins and saved watches from the agent', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const parsed = yaml.load(readFileSync(resolve(root, 'cordis.patch.yml'), 'utf8'), { schema: entryListSchema })
+    if (!Array.isArray(parsed)) throw new TypeError('base patch must parse to a patch list')
+    const rows = parsed.flatMap((patch): Record<string, unknown>[] =>
+      typeof patch === 'object' && patch !== null ? (patch as { insert?: Record<string, unknown>[] }).insert ?? [] : [])
+    const config = rows.find(row => row.id === 'sandbox-policy')?.config as Record<string, unknown> | undefined
+    expect(config?.protectSecrets).toBe(true)
+    const expression = (config?.protectedPaths as { __jsExpr?: string } | undefined)?.__jsExpr
+    if (expression === undefined) throw new Error('protectedPaths must be a !!js expression')
+    const dshHomePath = (...parts: string[]) => ['/home/me/.harness-studio', ...parts].join('/')
+    expect(evaluate({ dshHomePath }, expression)).toEqual([
+      '/home/me/.harness-studio/.credentials.yaml',
+      '/home/me/.harness-studio/.env',
+      '/home/me/.harness-studio/harness-studio/connectors.json',
+      '/home/me/.harness-studio/harness-studio/connector-grants.json',
+      '/home/me/.harness-studio/harness-studio/watches.json',
+    ])
+  })
 })

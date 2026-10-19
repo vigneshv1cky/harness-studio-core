@@ -20,10 +20,12 @@
  */
 
 import { existsSync } from 'node:fs'
-import { isAbsolute, join, parse, relative, sep } from 'node:path'
+import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 import { ItemRetainer, TextRetainer } from '@deepseek-ai/dsh-output-retention'
+import { canonicalPath, readDenied } from '@deepseek-ai/dsh-sandbox'
+import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import type { RetainedItems } from '@deepseek-ai/dsh-output-retention'
 import type { SubprocessHandle, SubprocessOutcome, SubprocessOutputRead, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import type { SaveTextSpill, SpillRef } from '@deepseek-ai/dsh-spill'
@@ -94,6 +96,20 @@ export class SearchError extends HarnessError {
     super(message, code, options)
     this.code = code
   }
+}
+
+/**
+ * A predicate for the files a search must not read: the secret files the session's sandbox policy hides from
+ * confined commands and the file tools (SSH keys, cloud credentials, dotenv files outside the workspace).
+ * Without `ctx.sandboxPolicy`, or with nothing hidden, it is undefined.
+ * @param ctx - the plugin context.
+ * @param exec - the current tool execution, whose session selects the policy.
+ * @returns a check taking a path as ripgrep reports it (absolute, or relative to `workdir`).
+ */
+export function secretFilter(ctx: Context, exec: ToolExecution): ((path: string, workdir: string) => boolean) | undefined {
+  const policy = ctx.get('sandboxPolicy')?.resolve(exec.agent ? { session: exec.agent.session } : {})
+  if (policy?.readDeny === undefined) return undefined
+  return (path, workdir) => readDenied(canonicalPath(resolve(workdir, path)), policy)
 }
 
 /** The completed acquisition of one `rg` run: complete stdout plus the resolved workdir. */

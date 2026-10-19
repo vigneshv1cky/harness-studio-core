@@ -36,6 +36,12 @@
       "path": "../../shell/shell"
     },
     {
+      "path": "../../sandbox/sandbox"
+    },
+    {
+      "path": "../../sandbox/sandbox-policy"
+    },
+    {
       "path": "../../spill/spill"
     },
     {

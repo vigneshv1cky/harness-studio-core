@@ -36,7 +36,7 @@ import {
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { SandboxNetworkUnavailableError, SandboxProvider, SandboxUnavailableError, canonicalPath } from '@deepseek-ai/dsh-sandbox'
-import type { ConfinedArgv, ConfinedSandboxMode, RunnerFailureRule, SandboxEnforcement, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
+import type { ConfinedArgv, ConfinedSandboxMode, RunnerFailureRule, SandboxEnforcement, SandboxPolicy, SandboxReadDenyCoverage } from '@deepseek-ai/dsh-sandbox'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { AclWriteGrant, assertTempRootOutsideWorkspace, registerAclDiagnosisSkill, tempWriteSid, workspaceWriteSid } from '@deepseek-ai/dsh-sandbox-windows-acl'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
@@ -447,6 +447,23 @@ export class LocalSandboxProvider extends SandboxProvider {
       denialSignatures: DENIAL_SIGNATURES[selected.runner],
       runnerFailureRules: RUNNER_FAILURE_RULES[selected.runner],
     })
+  }
+
+  /**
+   * Seatbelt denies reading every hidden path and dotenv files outside the workspace; bwrap (and an operator
+   * runner speaking its profile) masks only listed paths that exist; Landlock and the Windows runner hide
+   * nothing from commands. No usable runner runs no commands, so it hides nothing either.
+   * @returns the read-deny coverage of the runner the next command would use.
+   */
+  override readDenyCoverage(): SandboxReadDenyCoverage {
+    if (this.runnerCommand !== undefined) return 'listed'
+    let runner: SelectedRunner['runner']
+    try {
+      runner = this.selectRunner('workspace-write').runner
+    } catch {
+      return 'none'
+    }
+    return runner === 'seatbelt' ? 'full' : runner === 'bwrap' ? 'listed' : 'none'
   }
 
   /** The selected rung's runner invocation (program + profile arguments) for one policy. */

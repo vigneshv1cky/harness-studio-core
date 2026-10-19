@@ -21,12 +21,13 @@
  */
 
 import { readFileSync, statSync } from 'node:fs'
-import { isAbsolute } from 'node:path'
+import { homedir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { z as zod } from 'zod'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent'
-import type { SandboxExecutionPolicy, SandboxMode, SandboxNetwork } from '@deepseek-ai/dsh-sandbox'
+import type { SandboxExecutionPolicy, SandboxMode, SandboxNetwork, SandboxProvider, SandboxReadDeny, SandboxReadDenyCoverage } from '@deepseek-ai/dsh-sandbox'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -58,6 +59,58 @@ export type SandboxCeilingSource = (session: Session) => SandboxCeiling | undefi
 
 /** The network modes, in the order a setting offers them. */
 export const NETWORK_MODES = ['on', 'off', 'allowlist'] as const
+
+/**
+ * Well-known secret locations `protectSecrets` hides from confined commands and the agent's file tools: SSH
+ * keys, cloud and registry credentials, and plaintext password stores. `~/` is the user's home directory.
+ */
+export const SECRET_PATHS = [
+  '~/.ssh', '~/.aws', '~/.config/gcloud', '~/.netrc', '~/.git-credentials', '~/.npmrc', '~/.docker/config.json', '~/.env',
+] as const
+
+/** Paths inside {@link SECRET_PATHS} that stay readable: they hold no keys, and ssh needs them to connect through an agent. */
+export const SECRET_EXCEPTIONS = ['~/.ssh/known_hosts', '~/.ssh/config'] as const
+
+/** Expand a leading `~/` to the home directory; other paths must already be absolute. */
+function expandHome(path: string, home: string): string {
+  const expanded = path === '~' ? home : path.startsWith('~/') ? join(home, path.slice(2)) : path
+  if (!isAbsolute(expanded)) throw new Error(`sandbox-policy: protected path ${JSON.stringify(path)} must be absolute or start with ~/`)
+  return expanded
+}
+
+/** Spell a path for the model, with the home directory as `~`. */
+function displayPath(path: string, home: string): string {
+  return path === home ? '~' : path.startsWith(home + '/') ? `~${path.slice(home.length)}` : path
+}
+
+/**
+ * Sentences on the hidden secret files, or '' when nothing is hidden. They say only what is true where the
+ * next command runs: `coverage` is how completely the sandbox backend hides the files from commands (the
+ * agent's file tools refuse them everywhere). `escalatable` is false while a ceiling holds the session.
+ */
+function renderSecretsContext(deny: SandboxReadDeny | undefined, escalatable: boolean, coverage: SandboxReadDenyCoverage): string {
+  if (deny === undefined) return ''
+  const home = homedir()
+  const except = deny.except.length === 0 ? '' : ` (except ${deny.except.map(path => displayPath(path, home)).join(', ')})`
+  const listed = `${deny.paths.map(path => displayPath(path, home)).join(', ')}${except}`
+  const dotenv = deny.dotenvOutsideWorkspace ? ', and .env files outside the workspace' : ''
+  const retry = escalatable ? ' A command that genuinely needs one, such as git over ssh without an ssh agent, can be retried once with sandbox_permissions danger-full-access, which the user must approve.' : ''
+  switch (coverage) {
+    case 'full':
+      return ` Secret files are hidden from commands and file tools: ${listed}${dotenv}. Reading them fails with "Operation not permitted"; do not look for copies elsewhere.${retry}`
+    case 'listed': {
+      const dotenvNote = deny.dotenvOutsideWorkspace ? ' .env files outside the workspace are hidden from the file tools only: commands on this computer can still read them, so do not read them with commands either.' : ''
+      return ` Secret files are hidden from commands and file tools: ${listed}; commands see an empty folder or an empty file in their place.${dotenvNote} Do not look for copies elsewhere.${retry}`
+    }
+    case 'none':
+      return ` Secret files are hidden from the file tools only: ${listed}${dotenv}. This computer's sandbox cannot hide files from commands, so commands can still read them; do not read or send them with commands, and do not look for copies elsewhere.`
+    /* v8 ignore next 4 -- SandboxReadDenyCoverage is a typed same-process closed union; this branch is only the static exhaustiveness guard. */
+    default: {
+      const never: never = coverage
+      throw new Error(`unreachable read-deny coverage: ${String(never)}`)
+    }
+  }
+}
 
 /** Host entries the allowlist accepts: a DNS name or IP address, optionally `*.` for subdomains. */
 const HOST_ENTRY = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/
@@ -113,8 +166,12 @@ function renderNetworkContext(network: SandboxNetwork | undefined, escalatable: 
 }
 
 /** Render the policy without claiming which capabilities are mounted. */
-function renderPolicyContext(policy: SandboxExecutionPolicy, ceiling?: SandboxCeiling): string {
-  return renderFileContext(policy, ceiling) + (policy.mode === 'danger-full-access' ? '' : renderNetworkContext(policy.network, ceiling === undefined))
+function renderPolicyContext(policy: SandboxExecutionPolicy, ceiling: SandboxCeiling | undefined, coverage: SandboxReadDenyCoverage): string {
+  if (policy.mode === 'danger-full-access') return renderFileContext(policy, ceiling)
+  const escalatable = ceiling === undefined
+  return renderFileContext(policy, ceiling)
+    + renderNetworkContext(policy.network, escalatable)
+    + renderSecretsContext(policy.readDeny, escalatable, coverage)
 }
 
 function renderFileContext(policy: SandboxExecutionPolicy, ceiling?: SandboxCeiling): string {
@@ -167,6 +224,13 @@ export interface Config {
    * settings page can change the policy without a restart. Absent: only the configured values apply.
    */
   networkFile?: string
+  /**
+   * Hide well-known secret files ({@link SECRET_PATHS}, less {@link SECRET_EXCEPTIONS}) and dotenv files
+   * outside the workspace from confined commands and the agent's file tools (default: false).
+   */
+  protectSecrets?: boolean
+  /** More files or directories to hide while `protectSecrets` is on: absolute, or starting with `~/` (default: none). */
+  protectedPaths?: string[]
 }
 
 /** Inputs that select the sandbox policy for one capability call. */
@@ -208,6 +272,8 @@ export class SandboxPolicyService extends Service {
     network: z.union(['on', 'off', 'allowlist'] as const).default('on'),
     allowedHosts: z.array(z.string()).default([]),
     networkFile: z.string(),
+    protectSecrets: z.boolean().default(false),
+    protectedPaths: z.array(z.string()).default([]),
   })
 
   static inject = ['sessionProjections']
@@ -221,6 +287,8 @@ export class SandboxPolicyService extends Service {
   private readonly networkFile: string | undefined
   /** The saved file's last read, keyed by its modification time and size. */
   private savedNetwork: { stamp: string, network: SandboxNetwork | undefined } | undefined
+  /** The secret files hidden in every confined mode, or undefined when `protectSecrets` is off. */
+  readonly readDeny: SandboxReadDeny | undefined
   constructor(ctx: Context, config: Config) {
     super(ctx, 'sandboxPolicy')
     // schemastery (static Config) already filled `mode`; the cast records that
@@ -231,6 +299,14 @@ export class SandboxPolicyService extends Service {
     this.configuredNetwork = networkOf(config.network ?? 'on', config.allowedHosts ?? [])
     if (config.networkFile !== undefined && !isAbsolute(config.networkFile)) throw new Error('sandbox-policy: networkFile must be an absolute path')
     this.networkFile = config.networkFile
+    if (config.protectSecrets === true) {
+      const home = homedir()
+      this.readDeny = {
+        paths: [...new Set([...SECRET_PATHS, ...config.protectedPaths ?? []].map(path => expandHome(path, home)))],
+        except: SECRET_EXCEPTIONS.map(path => expandHome(path, home)),
+        dotenvOutsideWorkspace: true,
+      }
+    }
 
     ctx.sessionProjections.register({
       key: 'sandboxMode',
@@ -249,10 +325,23 @@ export class SandboxPolicyService extends Service {
           if (session === undefined) return ''
           const ceiling = this.ceilingOf(session)
           const capped = ceiling !== undefined && MODE_WIDTH[ceiling.mode] < MODE_WIDTH[this.uncappedMode({ session })]
-          return renderPolicyContext(this.resolve({ session }), capped ? ceiling : undefined)
+          return renderPolicyContext(this.resolve({ session }), capped ? ceiling : undefined, this.readDenyCoverage())
         },
       })
     })
+  }
+
+  /**
+   * How completely the mounted sandbox backend hides secret files from commands; `none` when no backend is
+   * mounted or it does not say, so the model is never told files are hidden where they are not.
+   */
+  private readDenyCoverage(): SandboxReadDenyCoverage {
+    if (this.readDeny === undefined) return 'none'
+    try {
+      return (this.ctx.get('sandbox') as SandboxProvider | undefined)?.readDenyCoverage() ?? 'none'
+    } catch {
+      return 'none'
+    }
   }
 
   /** Registered ceiling sources; see {@link limit}. */
@@ -313,12 +402,15 @@ export class SandboxPolicyService extends Service {
     const uncapped = this.uncappedMode(request)
     const ceiling = session === undefined ? undefined : this.ceilingOf(session)
     const network = this.network()
+    const mode = ceiling !== undefined && MODE_WIDTH[ceiling.mode] < MODE_WIDTH[uncapped] ? ceiling.mode : uncapped
     return {
-      mode: ceiling !== undefined && MODE_WIDTH[ceiling.mode] < MODE_WIDTH[uncapped] ? ceiling.mode : uncapped,
+      mode,
       workspaceRoot: resolveWorkspaceRoot(session?.header.cwd ?? this.workspaceRoot),
       ...session === undefined ? {} : { sessionId: session.id },
       // Absent means `on`, so the common case resolves exactly as before network policy existed.
       ...network.mode === 'on' ? {} : { network },
+      // Full access lifts confinement, and with it the hidden secret files.
+      ...this.readDeny === undefined || mode === 'danger-full-access' ? {} : { readDeny: this.readDeny },
     }
   }
 

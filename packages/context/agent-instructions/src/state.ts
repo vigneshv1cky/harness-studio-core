@@ -268,6 +268,8 @@ export async function reconcileInstructionContext(
     includeBaselineScopes: boolean
     excludedBaselineScopes?: ReadonlySet<string>
     projectRoot?: string
+    /** Paths `@path` imports must skip: the sandbox policy's hidden secret files. */
+    hiddenImport?: (path: string) => boolean
     signal?: AbortSignal
   },
 ): Promise<ReconciledInstructionContext | undefined> {
@@ -411,7 +413,7 @@ export async function reconcileInstructionContext(
           && hasKeptTrimmed(group, cached.trimmedDigest)) continue
       }
 
-      const file = await readScopeInstruction(probedFile, resolved.maxSourceBytes, fileSystem, options.signal, { projectRoot, globalFiles: userGlobalInstructionFiles(resolved) })
+      const file = await readScopeInstruction(probedFile, resolved.maxSourceBytes, fileSystem, options.signal, { projectRoot, globalFiles: userGlobalInstructionFiles(resolved), ...options.hiddenImport === undefined ? {} : { hidden: options.hiddenImport } })
       if (file === undefined) {
         rollbackGroup()
         break

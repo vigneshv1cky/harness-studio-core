@@ -5,14 +5,16 @@
  */
 
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { Context, Service } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SESSION_FORMAT_VERSION, Session, SessionId } from '@deepseek-ai/dsh-session'
-import SandboxPolicyService, { SANDBOX_MODES, normalizeHosts, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
+import SandboxPolicyService, { SANDBOX_MODES, SECRET_EXCEPTIONS, SECRET_PATHS, normalizeHosts, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import { NETWORK_LEAKS } from '@deepseek-ai/dsh-sandbox-policy'
+import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
+import type { ConfinedArgv, SandboxReadDenyCoverage } from '@deepseek-ai/dsh-sandbox'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt, { renderContextSnapshot, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 
@@ -368,6 +370,87 @@ describe('network policy', () => {
     await ctx.plugin(SessionProjectionRegistry)
     await expect(ctx.plugin(SandboxPolicyService, { networkFile: 'network.json' })).rejects.toThrow('networkFile must be an absolute path')
     await ctx.fiber.dispose()
+  })
+})
+
+describe('secret protection', () => {
+  /** A sandbox backend reporting a fixed read-deny coverage, as Seatbelt (`full`), bwrap (`listed`) or Landlock (`none`) would. */
+  function sandboxWith(coverage: SandboxReadDenyCoverage) {
+    return class extends SandboxProvider {
+      confine(argv: readonly string[]): Promise<ConfinedArgv> { return Promise.resolve({ argv: [...argv], enforcement: 'full', denialSignatures: [], runnerFailureRules: [] }) }
+      override readDenyCoverage(): SandboxReadDenyCoverage { return coverage }
+    }
+  }
+
+  async function withSecrets(config: Record<string, unknown>, coverage: SandboxReadDenyCoverage | 'unmounted' = 'full'): Promise<Context> {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(SessionProjectionRegistry)
+    if (coverage !== 'unmounted') await ctx.plugin(sandboxWith(coverage))
+    await ctx.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: '/fallback', protectSecrets: true, ...config })
+    return ctx
+  }
+
+  it('hides nothing unless protectSecrets is on', async () => {
+    const ctx = await withSecrets({ protectSecrets: undefined })
+    expect(ctx.sandboxPolicy.resolve().readDeny).toBeUndefined()
+    expect(await policyContext(ctx, session('sess-sec-off', '/p'))).not.toContain('Secret files')
+  })
+
+  it('resolves the well-known secret paths under the home directory, plus protectedPaths', async () => {
+    const ctx = await withSecrets({ protectedPaths: ['/opt/harness/.credentials.yaml', '~/.kube/config'] })
+    const deny = ctx.sandboxPolicy.resolve().readDeny
+    expect(deny?.paths).toEqual([...SECRET_PATHS.map(path => join(homedir(), path.slice(2))), '/opt/harness/.credentials.yaml', join(homedir(), '.kube/config')])
+    expect(deny?.paths).toContain(join(homedir(), '.ssh'))
+    expect(deny?.paths).toContain(join(homedir(), '.docker/config.json'))
+    expect(deny?.except).toEqual(SECRET_EXCEPTIONS.map(path => join(homedir(), path.slice(2))))
+    expect(deny?.dotenvOutsideWorkspace).toBe(true)
+  })
+
+  it('applies in read-only and workspace-write but not under full access', async () => {
+    const ctx = await withSecrets({})
+    expect(ctx.sandboxPolicy.resolve({ mode: 'read-only' }).readDeny).toBeDefined()
+    expect(ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }).readDeny).toBeUndefined()
+  })
+
+  it('rejects a relative protected path at load', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionProjectionRegistry)
+    await expect(ctx.plugin(SandboxPolicyService, { protectSecrets: true, protectedPaths: ['secrets.txt'] })).rejects.toThrow('must be absolute or start with ~/')
+    await ctx.fiber.dispose()
+  })
+
+  it('tells the model which files are hidden, and drops the escalation hint while a ceiling holds', async () => {
+    const ctx = await withSecrets({})
+    const target = session('sess-sec-on', '/p')
+    const text = await policyContext(ctx, target)
+    expect(text).toContain('Secret files are hidden from commands and file tools: ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.netrc, ~/.git-credentials, ~/.npmrc, ~/.docker/config.json, ~/.env (except ~/.ssh/known_hosts, ~/.ssh/config), and .env files outside the workspace.')
+    expect(text).toContain('retried once with sandbox_permissions danger-full-access')
+    ctx.sandboxPolicy.limit(() => ({ mode: 'read-only', reason: 'plan mode is on' }))
+    const held = await policyContext(ctx, target)
+    expect(held).toContain('Secret files are hidden')
+    expect(held).not.toContain('git over ssh')
+    setSandboxMode(target, 'danger-full-access')
+    const full = await withSecrets({})
+    expect(await policyContext(full, target)).not.toContain('Secret files')
+  })
+
+  it('says dotenv files outside the workspace stay readable by commands where the backend masks only listed paths (bwrap)', async () => {
+    const text = await policyContext(await withSecrets({}, 'listed'), session('sess-sec-bwrap', '/p'))
+    expect(text).toContain('Secret files are hidden from commands and file tools: ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.netrc, ~/.git-credentials, ~/.npmrc, ~/.docker/config.json, ~/.env (except ~/.ssh/known_hosts, ~/.ssh/config); commands see an empty folder or an empty file in their place.')
+    expect(text).toContain('.env files outside the workspace are hidden from the file tools only: commands on this computer can still read them')
+    expect(text).not.toContain('Operation not permitted')
+    expect(text).toContain('retried once with sandbox_permissions danger-full-access')
+  })
+
+  it('says commands can still read the files where the backend hides nothing (Landlock alone), or no backend says', async () => {
+    for (const coverage of ['none', 'unmounted'] as const) {
+      const text = await policyContext(await withSecrets({}, coverage), session(`sess-sec-${coverage}`, '/p'))
+      expect(text).toContain('Secret files are hidden from the file tools only: ~/.ssh, ~/.aws')
+      expect(text).toContain("This computer's sandbox cannot hide files from commands, so commands can still read them")
+      expect(text).not.toContain('hidden from commands and file tools')
+      expect(text).not.toContain('retried once with sandbox_permissions danger-full-access, which the user must approve.')
+    }
   })
 })
 

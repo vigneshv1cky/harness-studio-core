@@ -4,7 +4,7 @@
  * @module @deepseek-ai/dsh-agent-instructions/files
  */
 
-import { createReadStream } from 'node:fs'
+import { createReadStream, realpathSync } from 'node:fs'
 import { realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -100,6 +100,8 @@ function userGlobalRoots(config: ResolvedDiscoveryConfig): UserGlobalRoot[] {
 }
 
 interface LoadOptions extends DiscoverOptions {
+  /** Paths `@path` imports must skip ({@link readDenyFilter}). */
+  hiddenImport?: (path: string) => boolean
   maxBytes: number
   maxSourceBytes?: number
   replacePreviousBaseline?: boolean
@@ -465,6 +467,8 @@ interface ImportScope {
   bytes: number
   /** Set once the byte budget or read cap is reached; nothing more is read. */
   stopped: boolean
+  /** Paths never imported: the secret files the sandbox policy hides from the agent. */
+  hidden: ((path: string) => boolean) | undefined
 }
 
 function isInside(root: string, path: string): boolean {
@@ -558,6 +562,8 @@ async function expandWithin(
       const real = await realOrSelf(target)
       if (scope.root !== undefined && scope.realRoot !== undefined
         && (!isInside(scope.root, target) || !isInside(scope.realRoot, real))) continue
+      // Secret files hidden from commands and file tools are never pulled in through an import either.
+      if (scope.hidden?.(target) === true || scope.hidden?.(real) === true) continue
       // A cycle, or a file this expansion already shows: repeating it would only multiply reads and text.
       if (scope.seen.has(real)) continue
       scope.seen.add(real)
@@ -601,6 +607,47 @@ export interface InstructionImportOptions {
   signal?: AbortSignal
   /** Read count shared across one load; a fresh one caps this file alone. */
   counter?: ImportReadCounter
+  /** Paths never imported, whoever imports them ({@link readDenyFilter}). */
+  hidden?: (path: string) => boolean
+}
+
+/** The sandbox policy's secret-file list, as `@deepseek-ai/dsh-sandbox` describes it. */
+export interface InstructionReadDeny {
+  readonly paths: readonly string[]
+  readonly except: readonly string[]
+  readonly dotenvOutsideWorkspace: boolean
+}
+
+/** The path with symlinks resolved; for a missing path, its nearest existing ancestor's, plus the rest. */
+function canonical(path: string): string {
+  const absolute = resolve(path)
+  try {
+    return realpathSync(absolute)
+  } catch {
+    const parent = dirname(absolute)
+    return parent === absolute ? absolute : join(canonical(parent), basename(absolute))
+  }
+}
+
+/**
+ * The paths instruction imports must skip: the files the sandbox policy hides from commands and file tools
+ * (an exception wins; a listed path is hidden wherever it is; a dotenv file only outside the workspace), so a
+ * user-global `@~/.ssh/id_ed25519` cannot put a key into the model's context.
+ * @param deny - the policy's secret-file list, or undefined when nothing is hidden.
+ * @param workspaceRoot - the session's workspace.
+ * @returns the test, or undefined when nothing is hidden.
+ */
+export function readDenyFilter(deny: InstructionReadDeny | undefined, workspaceRoot: string): ((path: string) => boolean) | undefined {
+  if (deny === undefined) return undefined
+  const paths = deny.paths.map(canonical)
+  const except = deny.except.map(canonical)
+  const workspace = canonical(workspaceRoot)
+  return (raw) => {
+    const path = canonical(raw)
+    if (except.some(allowed => isInside(allowed, path))) return false
+    if (paths.some(hidden => isInside(hidden, path))) return true
+    return deny.dotenvOutsideWorkspace && /^\.env(\..+)?$/.test(basename(path)) && !isInside(workspace, path)
+  }
 }
 
 /**
@@ -640,6 +687,7 @@ export async function expandInstructionImports(
     seen: new Set([await realOrSelf(file.absolutePath)]),
     bytes: Buffer.byteLength(file.content, 'utf8'),
     stopped: false,
+    hidden: options.hidden,
   }
   const content = await expandWithin(file.content, file.absolutePath, scope, 1)
   return content === file.content ? file : { ...file, content }
@@ -713,6 +761,7 @@ export async function loadBaselineInstructionSet(
     ...fileSystem === undefined ? {} : { fileSystem },
     ...options.signal === undefined ? {} : { signal: options.signal },
     counter: { reads: 0 },
+    ...options.hiddenImport === undefined ? {} : { hidden: options.hiddenImport },
   }
   const loaded: LoadedInstructionFile[] = []
   for (const file of discovered) {
@@ -831,7 +880,7 @@ export async function readScopeInstruction(
   maxSourceBytes: number,
   fileSystem: FileSystem,
   signal?: AbortSignal,
-  imports?: { projectRoot: string; globalFiles: readonly string[] },
+  imports?: { projectRoot: string; globalFiles: readonly string[]; hidden?: (path: string) => boolean },
 ): Promise<LoadedInstructionFile | undefined> {
   const content = await readBounded(file, maxSourceBytes, fileSystem, signal)
   if (content === undefined) return undefined

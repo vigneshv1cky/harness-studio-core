@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { loadBaselineInstructions, withSavedLimit } from '@deepseek-ai/dsh-agent-instructions'
-import { MAX_IMPORT_READS } from '../src/files.ts'
+import { MAX_IMPORT_READS, readDenyFilter } from '../src/files.ts'
 
 describe('@path imports in instruction files', () => {
   let base: string
@@ -104,6 +104,24 @@ describe('@path imports in instruction files', () => {
     expect(text).toContain('a'.repeat(600))
     expect(text).not.toContain('b'.repeat(600))
     expect(text).toContain('@docs/b.md')
+  })
+
+  it('never imports the secret files the sandbox policy hides, even from the user-global file', async () => {
+    await mkdir(join(outside, '.ssh'), { recursive: true })
+    await writeFile(join(outside, '.ssh', 'id_ed25519'), 'PRIVATE-KEY\n')
+    await writeFile(join(outside, '.ssh', 'config'), 'SSH-CONFIG\n')
+    await writeFile(join(outside, '.env'), 'DOTENV-SECRET\n')
+    await writeFile(join(home, 'AGENTS.md'), [`@${join(outside, '.ssh', 'id_ed25519')}`, `@${join(outside, '.ssh', 'config')}`, `@${join(outside, '.env')}`, `@${join(outside, 'secret.md')}`, ''].join('\n'))
+    const hiddenImport = readDenyFilter({ paths: [join(outside, '.ssh')], except: [join(outside, '.ssh', 'config')], dotenvOutsideWorkspace: true }, project)
+    const rendered = await loadBaselineInstructions({ cwd: project, dshHome: home, agentsHome: join(base, 'agents'), maxBytes: 131072, ...hiddenImport === undefined ? {} : { hiddenImport } })
+    expect(rendered?.text).not.toContain('PRIVATE-KEY')
+    expect(rendered?.text).not.toContain('DOTENV-SECRET')
+    expect(rendered?.text).toContain('SSH-CONFIG')
+    expect(rendered?.text).toContain('OUTSIDE-SECRET')
+    expect(readDenyFilter(undefined, project)).toBeUndefined()
+    const filter = readDenyFilter({ paths: [], except: [], dotenvOutsideWorkspace: true }, project)
+    expect(filter?.(join(project, '.env'))).toBe(false)
+    expect(filter?.(join(outside, '.env.local'))).toBe(true)
   })
 
   it('ignores references in code, e-mail addresses and missing files', async () => {

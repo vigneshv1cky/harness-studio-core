@@ -253,6 +253,11 @@
         network: 'on'
         allowedHosts: []
         networkFile: !!js dshHomePath('harness-studio', 'network.json')
+        # Hide well-known secret files (SSH keys, cloud and registry credentials, dotenv files outside the
+        # workspace) from confined commands and the agent's file tools, plus Harness's own key store and
+        # Harness Studio's connector settings and sign-ins and saved watches (which hold command output).
+        protectSecrets: true
+        protectedPaths: !!js "[dshHomePath('.credentials.yaml'), dshHomePath('.env'), dshHomePath('harness-studio', 'connectors.json'), dshHomePath('harness-studio', 'connector-grants.json'), dshHomePath('harness-studio', 'watches.json')]"
 
     - id: bash-sandbox
       name: '@deepseek-ai/dsh-bash-sandbox'

@@ -29,7 +29,10 @@ export const policySchema = z.object({
     z.object({ mode: z.literal('off') }).strict(),
     z.object({ mode: z.literal('allowlist'), hosts: z.array(z.string()) }).strict(),
   ]).optional(),
-}).strict()
+  // Secret files to hide name paths on the client's computer, which mean nothing on the remote host: accepted
+  // so a client with secret protection on can still run commands, then dropped.
+  readDeny: z.object({ paths: z.array(z.string()), except: z.array(z.string()), dotenvOutsideWorkspace: z.boolean() }).strict().optional(),
+}).strict().transform(({ readDeny: _clientPaths, ...policy }) => policy)
 /** Complete directory entries. */
 export const entriesSchema = z.array(z.object({ name: z.string(), type: z.enum(['file', 'directory', 'other']), target: targetSchema, version: z.string().optional(), size: z.number().nonnegative().optional() }).strict())
 /** Guarded write intent. */

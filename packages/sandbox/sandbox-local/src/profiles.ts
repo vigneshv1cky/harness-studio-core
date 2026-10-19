@@ -4,8 +4,9 @@
  * @module @deepseek-ai/dsh-sandbox-local/profiles
  */
 
+import { statSync } from 'node:fs'
 import { grantArgs as landlockGrantArgs } from '@deepseek-ai/node-addon-system/landlock-run'
-import { writableRoots } from '@deepseek-ai/dsh-sandbox'
+import { canonicalPath, canonicalReadDeny, isUnder, writableRoots } from '@deepseek-ai/dsh-sandbox'
 import type { SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 
 /**
@@ -22,6 +23,32 @@ export function bwrapProfileArgs(policy: SandboxPolicy): string[] {
   // A network namespace of its own, with only loopback: no route to other hosts. Under `allowlist` the
   // proxy's Unix socket, outside /tmp and visible through the read-only root, is the only way out.
   if (limitsNetwork(policy)) args.push('--unshare-net')
+  args.push(...bwrapReadDenyArgs(policy))
+  return args
+}
+
+/**
+ * Masking mounts for the policy's read-deny, after the workspace bind so they win inside it too: an empty
+ * tmpfs over each hidden directory (with its exceptions bound back read-only) and `/dev/null` over each hidden
+ * file. Only paths that exist can be masked, and bwrap cannot name dotenv files in advance, so
+ * `dotenvOutsideWorkspace` is not applied here beyond the listed paths.
+ */
+function bwrapReadDenyArgs(policy: SandboxPolicy): string[] {
+  const deny = canonicalReadDeny(policy)
+  if (deny === undefined) return []
+  const args: string[] = []
+  for (const path of deny.paths) {
+    const info = statSync(path, { throwIfNoEntry: false })
+    if (info === undefined) continue
+    if (info.isDirectory()) {
+      args.push('--tmpfs', path)
+      for (const allowed of deny.except) {
+        if (statSync(allowed, { throwIfNoEntry: false }) !== undefined && allowed !== path && isUnder(allowed, path)) args.push('--ro-bind', allowed, allowed)
+      }
+    } else {
+      args.push('--ro-bind', '/dev/null', path)
+    }
+  }
   return args
 }
 
@@ -71,5 +98,25 @@ export function seatbeltProfileArgs(policy: SandboxPolicy): string[] {
   if (limitsNetwork(policy)) {
     forms.push('(deny network-outbound (remote ip "*:*"))', '(allow network-outbound (remote ip "localhost:*"))')
   }
+  forms.push(...seatbeltReadDenyForms(policy))
   return ['-p', forms.join(' ')]
+}
+
+/**
+ * SBPL for the policy's read-deny. Seatbelt applies the last matching rule, so the order is the meaning:
+ * dotenv files are denied everywhere and then allowed again inside the workspace; the listed paths are denied
+ * after that, inside the workspace too; their exceptions are allowed last. Only reading contents is denied
+ * (`file-read-data`), so names and sizes stay visible and a listing of the home directory still works.
+ */
+function seatbeltReadDenyForms(policy: SandboxPolicy): string[] {
+  const deny = canonicalReadDeny(policy)
+  if (deny === undefined) return []
+  const subpaths = (paths: readonly string[]) => paths.map(path => `(subpath ${sbplString(path)})`).join(' ')
+  const forms: string[] = []
+  if (deny.dotenvOutsideWorkspace) {
+    forms.push(String.raw`(deny file-read-data (regex #"/\.env(\.[^/]+)?$"))`, `(allow file-read-data ${subpaths([canonicalPath(policy.workspaceRoot)])})`)
+  }
+  if (deny.paths.length > 0) forms.push(`(deny file-read-data ${subpaths(deny.paths)})`)
+  if (deny.except.length > 0) forms.push(`(allow file-read-data ${subpaths(deny.except)})`)
+  return forms
 }

@@ -17,7 +17,7 @@ import type { GenericCallView, SearchResultView, ToolResult } from '@deepseek-ai
 import type { RetainedItems } from '@deepseek-ai/dsh-output-retention'
 import type { SpillRef } from '@deepseek-ai/dsh-spill'
 import type { GrepMatch } from './search-core.ts'
-import { SearchError, previewLine, retainGrepMatches, runRipgrep, toWorkdirRelative, trySaveFormattedResult } from './search-core.ts'
+import { SearchError, previewLine, retainGrepMatches, runRipgrep, secretFilter, toWorkdirRelative, trySaveFormattedResult } from './search-core.ts'
 import { grepSearchMeta, searchViewFromMeta } from './presentation.ts'
 import { acceptedDirectCallValue } from './direct-call.ts'
 
@@ -320,11 +320,21 @@ export function applyGrepTool(ctx: Context, caps: GrepToolCaps): void {
     },
     async execute(args, exec) {
       const input = parseGrepArgs(args)
+      const hidden = secretFilter(ctx, exec)
+      if (hidden !== undefined && input.path !== undefined) {
+        const workdir = exec.agent === undefined ? process.cwd() : await ctx.workingDirectory.ensure(exec.agent, exec.signal)
+        if (hidden(input.path, workdir)) {
+          throw new SearchError(`cannot search "${input.path}": it is a secret file or folder that Harness Studio hides from the agent. Do not look for a copy; ask the user if the task needs it.`, 'SEARCH_FAILED')
+        }
+      }
       const run = await runRipgrep(ctx, exec, 'grep', buildGrepCommand(input), caps.rawOutputMaxBytes, caps.graceMs, caps.stderrMaxBytes)
       if (run.noMatches) return { matches: [] }
 
       const all: GrepMatch[] = []
       for (const raw of parseGrepMatches(run.stdout)) {
+        // Ripgrep skips hidden files while walking, which covers the built-in secret paths; this also drops
+        // matches under a protected path it does walk, such as a visible one the deployment added.
+        if (hidden?.(raw.path, run.workdir) === true) continue
         const match: GrepMatch = {
           path: toWorkdirRelative(raw.path, run.workdir),
           lineNumber: raw.lineNumber,

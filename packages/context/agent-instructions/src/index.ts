@@ -20,7 +20,7 @@ import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type { ToolExecution, ToolExecutionResult, ToolExecutionToken } from '@deepseek-ai/dsh-tools'
 import { Config, resolveConfig, workspaceBaselineIdentity, type ResolvedConfig } from './config.ts'
-import { findProjectRoot, loadBaselineInstructionSet } from './files.ts'
+import { findProjectRoot, loadBaselineInstructionSet, readDenyFilter, type InstructionReadDeny } from './files.ts'
 import { instructionDuplicateKey } from './digest.ts'
 import {
   applyInstructionVersionUpdates,
@@ -150,6 +150,9 @@ export function apply(ctx: Context, config: Config): void {
     const authorityMessages = [...claimed]
     const cwd = await ctx.workingDirectory.ensure(agent, signal)
     const projectRoot = await findProjectRoot(cwd, resolved.projectRootMarkers, fileSystem, signal)
+    // The secret files the sandbox policy hides from commands and file tools stay out of imports too.
+    const readDeny = (ctx.get('sandboxPolicy') as { readDeny?: InstructionReadDeny } | undefined)?.readDeny
+    const hiddenImport = readDenyFilter(readDeny, cwd)
     const identity = workspaceBaselineIdentity(resolved, cwd, projectRoot)
     if (touchedPaths.length === 0 && pending.length > 0
       && baselinePreparations.get(agent.session)?.identity === identity) return pending[0]
@@ -174,6 +177,7 @@ export function apply(ctx: Context, config: Config): void {
         localInstructionFileCandidates: resolved.localInstructionFileCandidates,
         projectRoot,
         replacePreviousBaseline,
+        ...hiddenImport === undefined ? {} : { hiddenImport },
         signal,
       }, fileSystem)
       const baseline = baselineInstructionState(instructions?.included ?? [])
@@ -242,6 +246,7 @@ export function apply(ctx: Context, config: Config): void {
         ...keepVisibleBaseline ? { excludedBaselineScopes } : {},
         touchedPaths,
         projectRoot,
+        ...hiddenImport === undefined ? {} : { hiddenImport },
         signal,
       },
     )

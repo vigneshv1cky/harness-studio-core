@@ -49,6 +49,8 @@ Load the package with a default mode; the fail-safe default is `read-only`, and 
 | `network` | `on` | Network for confined commands: `on`, `off` or `allowlist` (see `SandboxNetwork` in `@deepseek-ai/dsh-sandbox`) |
 | `allowedHosts` | `[]` | Hosts `allowlist` admits; entries are lower-cased, stripped of scheme, path and port, and invalid ones dropped. `*.example.com` admits subdomains |
 | `networkFile` | none | Absolute path of a JSON file `{ "network": …, "allowedHosts": [...] }` that replaces the two fields above when it holds a valid `network`; re-read when it changes, so a settings page can switch the policy without a restart |
+| `protectSecrets` | `false` | Hide well-known secret files and dotenv files outside the workspace from the agent's file tools, and from confined commands as far as the backend can (see Hidden secret files) |
+| `protectedPaths` | `[]` | More files or directories to hide while `protectSecrets` is on: absolute, or starting with `~/` |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-sandbox-policy) is the exhaustive source for every accepted field and its JSDoc.
 
@@ -152,6 +154,10 @@ Network for commands: off. Direct connections to other computers are blocked, so
 ```
 
 Under `allowlist` it names the hosts and the proxy variables instead. The middle sentence depends on the platform (`NETWORK_LEAKS`): on Linux it names Unix sockets, a local proxy or tunnel listening on one, the Docker socket, and D-Bus with systemd-run. The retry sentence is left out while a ceiling holds the session.
+
+##### Hidden secret files
+
+With `protectSecrets` on, a sentence lists the hidden files, worded for the mounted sandbox backend's `readDenyCoverage()` so the model is never told files are hidden where they are not: `full` (Seatbelt) says commands and file tools both refuse them, dotenv files outside the workspace included; `listed` (bwrap) says commands see an empty folder or file in their place and that dotenv files outside the workspace are hidden from the file tools only; `none` (Landlock alone, the Windows runner, or no backend mounted) says only the file tools hide them and commands can still read them.
 
 #### Token effect
 

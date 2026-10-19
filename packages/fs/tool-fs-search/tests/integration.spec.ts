@@ -12,7 +12,7 @@
 import { provideWorkingDirectoryFixture } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -200,5 +200,50 @@ describe('search tools over the real subprocess service + the packaged rg', () =
       expect(text(result)).toContain('subprocess failed before reporting an outcome')
       expect(text(result)).not.toContain('could not start')
     })
+  })
+})
+
+describe('grep and the secret files the sandbox policy hides', () => {
+  let home: string
+  beforeEach(async () => {
+    dir = await realpath(await mkdtemp(join(tmpdir(), 'dsh-search-secrets-ws-')))
+    home = await realpath(await mkdtemp(join(tmpdir(), 'dsh-search-secrets-home-')))
+    await mkdir(join(home, '.aws'))
+    await writeFile(join(home, '.aws', 'credentials'), 'token = AWS-SECRET\n')
+    await mkdir(join(home, 'vault'))
+    await writeFile(join(home, 'vault', 'notes.txt'), 'token = VAULT-SECRET\n')
+    await writeFile(join(home, 'readme.txt'), 'token = public\n')
+    await writeFile(join(dir, 'main.ts'), 'const token = 1\n')
+    ctx = new Context()
+    provideWorkingDirectoryFixture(ctx)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(LocalSubprocessRuntime)
+    // `vault` is visible to ripgrep's walk, unlike the hidden `.aws`, so it exercises the result filter.
+    ctx.provide('sandboxPolicy', {
+      resolve: () => ({ mode: 'workspace-write', workspaceRoot: dir, readDeny: { paths: [join(home, '.aws'), join(home, 'vault')], except: [], dotenvOutsideWorkspace: true } }),
+    } as never)
+    await ctx.plugin(ToolFsSearch, { sampleOverCapGlobResults: true })
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+    await rm(home, { recursive: true, force: true })
+  })
+
+  it('refuses to search a hidden file or folder named directly', async () => {
+    for (const path of [join(home, '.aws'), join(home, '.aws', 'credentials'), join(home, 'vault')]) {
+      const result = await call('grep', { pattern: 'token', path }, agent())
+      expect(result.isError).toBe(true)
+      expect(text(result)).toContain('secret file or folder that Harness Studio hides from the agent')
+      expect(text(result)).not.toContain('SECRET')
+    }
+  })
+
+  it('leaves hidden files out of a wider search and still finds the rest', async () => {
+    const result = await call('grep', { pattern: 'token', path: home }, agent())
+    expect(result.isError).toBe(false)
+    expect(text(result)).toContain('token = public')
+    expect(text(result)).not.toContain('SECRET')
+    expect(text(await call('grep', { pattern: 'token' }, agent()))).toContain('const token = 1')
   })
 })

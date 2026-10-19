@@ -20,6 +20,7 @@ export {
 } from './escalation.ts'
 export type { EscalationApproval, EscalationApprover, EscalationOutcome, EscalationRequest } from './escalation.ts'
 export { canonicalPath, writableRoots } from './roots.ts'
+export { DOTENV_NAME, canonicalReadDeny, isUnder, readDenied } from './secrets.ts'
 
 /**
  * File-effect policy for confined processes. `read-only` permits only required
@@ -52,6 +53,36 @@ export type SandboxNetwork =
   | { readonly mode: 'off' }
   | { readonly mode: 'allowlist'; readonly hosts: readonly string[] }
 
+/**
+ * Files confined processes may not read, applied alongside the file-effect
+ * mode: secrets such as SSH keys and cloud credentials, which a command
+ * tricked by a prompt injection could otherwise read and send elsewhere.
+ * Paths are absolute; backends compare them canonicalized, and drop a listed
+ * path that contains the workspace root (see `canonicalReadDeny`). Seatbelt
+ * denies reading their contents (names and sizes stay visible); bwrap mounts an empty directory or
+ * `/dev/null` over each one that exists, so it cannot cover a dotenv file it
+ * cannot name in advance; Landlock and the Windows runner do not apply it.
+ * `danger-full-access` bypasses confinement and with it this list.
+ */
+export interface SandboxReadDeny {
+  /** Files and directories whose contents are hidden, inside the workspace or not. */
+  readonly paths: readonly string[]
+  /** Paths inside {@link paths} that stay readable, such as `~/.ssh/known_hosts`. */
+  readonly except: readonly string[]
+  /** Also hide dotenv files (`.env`, `.env.*`) outside the workspace root (Seatbelt and the file tools). */
+  readonly dotenvOutsideWorkspace: boolean
+}
+
+/**
+ * How completely a backend hides a {@link SandboxReadDeny} from confined
+ * commands: `full` denies reading every listed path and dotenv files outside
+ * the workspace (Seatbelt); `listed` masks only the listed paths that exist,
+ * never other projects' dotenv files (bwrap); `none` hides nothing from
+ * commands (Landlock alone, the Windows runner), though the agent's file tools
+ * still refuse the files.
+ */
+export type SandboxReadDenyCoverage = 'full' | 'listed' | 'none'
+
 /** A confining (non-`danger-full-access`) mode — the modes a {@link SandboxPolicy} can carry. */
 export type ConfinedSandboxMode = Exclude<SandboxMode, 'danger-full-access'>
 
@@ -75,6 +106,8 @@ export interface SandboxExecutionPolicy {
   sessionId?: SessionId
   /** Network policy for this execution; absent means `{ mode: 'on' }`. */
   network?: SandboxNetwork
+  /** Files this execution may not read; absent hides nothing. */
+  readDeny?: SandboxReadDeny
 }
 
 /**
@@ -216,6 +249,16 @@ export abstract class SandboxProvider extends Service {
    *   the selected backend achieves for it.
    */
   abstract confine(argv: readonly string[], policy: SandboxPolicy, signal?: AbortSignal): Promise<ConfinedArgv>
+
+  /**
+   * How completely this backend applies a policy's {@link SandboxReadDeny} to
+   * confined commands, so the model is told the truth about it. The default,
+   * `none`, claims nothing; a backend that hides files overrides it.
+   * @returns the coverage of the backend that would run the next command.
+   */
+  readDenyCoverage(): SandboxReadDenyCoverage {
+    return 'none'
+  }
 }
 
 export default SandboxProvider
