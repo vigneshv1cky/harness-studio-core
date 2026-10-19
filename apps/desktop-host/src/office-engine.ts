@@ -17,22 +17,29 @@ export function runtimeArchivePath(runtimeDir: string): string | undefined {
 /**
  * Keep engine executable and resource paths usable by native child processes outside Electron.
  * Hooks apply only to this thread; worker threads must install their own resolver.
+ * Harness Studio: on Linux the Office kit itself also loads from the unpacked tree. Electron reports a missing
+ * path inside the archive as present to `lstatSync(path, { throwIfNoEntry: false })`, so the archived kit takes
+ * the absent native Linux engine for an incomplete install instead of falling back to its WASM engine.
  * @param runtimeDir - Prepared or ASAR-contained dsh runtime directory.
+ * @param platform - Host platform; selects whether the kit entry package is redirected too.
  * @returns Installed resolver for the Host lifetime, or undefined for a non-ASAR runtime.
  */
-export function installOfficeEngineResolution(runtimeDir: string): ModuleHooks | undefined {
+export function installOfficeEngineResolution(runtimeDir: string, platform: NodeJS.Platform = process.platform): ModuleHooks | undefined {
   if (runtimeArchivePath(runtimeDir) === undefined) return undefined
   const root = realpathSync(runtimeDir)
   const archive = dirname(root)
-  const source = pathToFileURL(join(root, 'node_modules', '@deepseek-ai', 'libreoffice-kit-')).href
-  const destination = pathToFileURL(join(`${archive}.unpacked`, relative(archive, root), 'node_modules', '@deepseek-ai', 'libreoffice-kit-')).href
+  const source = pathToFileURL(join(root, 'node_modules', '@deepseek-ai', 'libreoffice-kit')).href
+  const destination = pathToFileURL(join(`${archive}.unpacked`, relative(archive, root), 'node_modules', '@deepseek-ai', 'libreoffice-kit')).href
+  const kit = platform === 'linux'
   return registerHooks({
     resolve(specifier, context, nextResolve) {
       const resolved = nextResolve(specifier, context)
       if (!resolved.url.startsWith('file:')) return resolved
       const engineRequest = /^@deepseek-ai\/libreoffice-kit-(?:darwin|win32|linux)-/u.test(specifier)
-      const engineTarget = /\/node_modules\/@deepseek-ai\/libreoffice-kit-(?:darwin|win32|linux)-[^/]+\//u
-        .test(new URL(resolved.url).pathname)
+        || (kit && /^@deepseek-ai\/libreoffice-kit(?:\/|$)/u.test(specifier))
+      const pathname = new URL(resolved.url).pathname
+      const engineTarget = /\/node_modules\/@deepseek-ai\/libreoffice-kit-(?:darwin|win32|linux)-[^/]+\//u.test(pathname)
+        || (kit && /\/node_modules\/@deepseek-ai\/libreoffice-kit\//u.test(pathname))
       if (!engineRequest && !engineTarget) return resolved
       const canonical = pathToFileURL(realpathSync(fileURLToPath(resolved.url))).href
       if (!canonical.startsWith(source)) {

@@ -20,7 +20,7 @@ const TARGETS = {
   'mac-arm64': { platform: 'darwin', arch: 'arm64', os: 'mac' },
   'mac-x64': { platform: 'darwin', arch: 'x64', os: 'mac' },
   'win-x64': { platform: 'win32', arch: 'x64', os: 'win' },
-} as const satisfies Record<DesktopPackageTargetName, {
+} as const satisfies Record<Exclude<DesktopPackageTargetName, 'linux-x64' | 'linux-arm64'>, {
   readonly platform: NodeJS.Platform
   readonly arch: string
   readonly os: string
@@ -181,7 +181,8 @@ export async function createDesktopUploadPlan(
   targetName: DesktopPackageTargetName,
   options: DesktopUploadPlanOptions = {},
 ): Promise<DesktopUploadPlan> {
-  const target = TARGETS[targetName]
+  // Harness Studio: Linux builds are unsigned and never uploaded, so they have no upload target.
+  const target = Object.hasOwn(TARGETS, targetName) ? TARGETS[targetName as keyof typeof TARGETS] : undefined
   if (target === undefined) {
     throw new Error(`desktop upload: unsupported target ${String(targetName)}`)
   }
@@ -197,7 +198,7 @@ export async function createDesktopUploadPlan(
 
   const update = resolveDesktopUploadConfig(environment, target.platform, target.arch)
   const buildRecord = await jsonFile(
-    join(artifactsRoot, desktopBuildRecordFilename(targetName)),
+    join(artifactsRoot, desktopBuildRecordFilename(targetName as keyof typeof TARGETS)),
     `${targetName} package completion record`,
   )
   // Packaging wrote the version it published; reading it back keeps release settings out of shell variables.

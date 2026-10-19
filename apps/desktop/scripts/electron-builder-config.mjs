@@ -75,6 +75,8 @@ export function createElectronBuilderConfig(
   let dshDestination
   let windowsCode = []
   const unpack = ['**/*.{node,dylib,dll,so,exe}', '**/*.so.*', '**/spawn-helper', '**/@vscode/ripgrep-*/bin/rg',
+    // Harness Studio: the Linux sandbox launcher has no file extension and must be executable outside ASAR.
+    '**/@deepseek-ai/node-addon-system-linux-*/bin/**',
     `**/node_modules/@deepseek-ai/libreoffice-kit-${resolvedPlatform}-${resolvedArch}/**/*`]
   const windowsSigner = packagesWindows && !unsigned
     ? createWindowsTokenSigner({
@@ -107,6 +109,11 @@ export function createElectronBuilderConfig(
     appId,
     protocols: [{ name: 'Harness Studio', schemes: ['harness-studio'] }],
     extraMetadata: {
+      // Harness Studio: Linux packages (.deb) require a homepage.
+      homepage: 'https://github.com/vigneshv1cky/harness-studio',
+      // Harness Studio: Electron names Linux windows (WM_CLASS, Wayland app_id) after desktopName, and the
+      // launcher entry's StartupWMClass follows it, so the desktop shows the app's icon for its windows.
+      desktopName: 'harness-studio.desktop',
       dshDesktopAppId: appId,
       dshDesktopUpdateChannel: update?.channel ?? 'nightly',
       ...(policy === undefined ? {} : { dshMandatoryUpdatePolicy: policy }),
@@ -248,9 +255,23 @@ export function createElectronBuilderConfig(
       },
       target: ['nsis'],
     },
+    // Harness Studio: an AppImage for most distributions and a .deb for Debian and Ubuntu.
     linux: {
       category: 'Development',
-      target: ['AppImage'],
+      target: ['AppImage', 'deb'],
+      executableName: 'harness-studio',
+      icon: fileURLToPath(new URL('../resources/linux-icons', import.meta.url)),
+      synopsis: 'Any-model agent for your code and UI',
+      description: 'Harness Studio: an any-model agent app for your code and UI, built on DeepSeek Harness.',
+      maintainer: 'Harness Studio <97196163+vigneshv1cky@users.noreply.github.com>',
+      vendor: 'Harness Studio',
+    },
+    deb: {
+      packageName: 'harness-studio',
+      // electron-builder's default dependencies plus the sound and GPU buffer libraries Electron loads at start;
+      // a minimal Ubuntu 24.04 install lacks libasound, and the app exits before opening a window without it.
+      depends: ['libgtk-3-0', 'libnotify4', 'libnss3', 'libxss1', 'libxtst6', 'xdg-utils', 'libatspi2.0-0', 'libuuid1',
+        'libsecret-1-0', 'libasound2t64 | libasound2', 'libgbm1'],
     },
     nsis: {
       installerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),

@@ -21,10 +21,16 @@ describe('system Documents directory', () => {
     expect(run).not.toHaveBeenCalled()
   })
 
-  it.each(['', '\r\n', '/home/a\n'])('rejects an unavailable XDG directory %j', async (stdout) => {
+  it.each(['', '\r\n', '/home/a\n', '/home/a/\n'])('falls back to ~/Documents for an unavailable XDG directory %j', async (stdout) => {
     const run: NativeCommandRunner = async () => ({ stdout, stderr: '' })
     await expect(defaultWorkspaceDirectory(undefined, new AbortController().signal, { platform: 'linux', home: '/home/a', run }))
-      .rejects.toThrow('unavailable')
+      .resolves.toBe('/home/a/Documents/deepseek-harness/default-workspace')
+  })
+
+  it('falls back to ~/Documents when xdg-user-dir is not installed', async () => {
+    const run: NativeCommandRunner = async () => { throw new Error('spawn xdg-user-dir ENOENT') }
+    await expect(defaultWorkspaceDirectory(undefined, new AbortController().signal, { platform: 'linux', home: '/home/a', run }))
+      .resolves.toBe('/home/a/Documents/deepseek-harness/default-workspace')
   })
 
   it('propagates lookup failure and cancellation', async () => {

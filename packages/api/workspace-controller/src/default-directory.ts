@@ -61,16 +61,23 @@ export async function defaultWorkspaceDirectory(
         ], signal, 'hidden'))
         break
       case 'linux':
-        ({ stdout } = await run('xdg-user-dir', ['DOCUMENTS'], signal, 'hidden'))
+        // Harness Studio: minimal systems have no xdg-user-dir; fall back to ~/Documents, the XDG default.
+        try {
+          ({ stdout } = await run('xdg-user-dir', ['DOCUMENTS'], signal, 'hidden'))
+        } catch (_missing) {
+          signal.throwIfAborted()
+          stdout = paths.join(internals.home ?? homedir(), 'Documents')
+        }
         break
       default:
         throw new Error(`system Documents directory is unavailable on ${platform}`)
     }
     directory = stdout.replace(/[\r\n]+$/, '')
-    // XDG reports the home directory when this user directory is disabled.
-    if (directory === '' || (platform === 'linux' && paths.normalize(directory) === (internals.home ?? homedir()))) {
-      throw new Error('system Documents directory is unavailable')
+    // XDG reports the home directory when this user directory is disabled; Harness Studio then uses ~/Documents.
+    if (platform === 'linux' && (directory === '' || paths.resolve(directory) === paths.resolve(internals.home ?? homedir()))) {
+      directory = paths.join(internals.home ?? homedir(), 'Documents')
     }
+    if (directory === '') throw new Error('system Documents directory is unavailable')
   }
   directory = validateDocumentsDirectory(directory, platform)
   signal.throwIfAborted()

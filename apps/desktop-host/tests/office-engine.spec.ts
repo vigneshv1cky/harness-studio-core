@@ -19,7 +19,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function fixture(runtimeName = 'dsh') {
+function fixture(runtimeName = 'dsh', platform: NodeJS.Platform = 'darwin') {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'desktop-office-resolution-')))
   roots.push(root)
   const runtime = join(root, 'app.asar', runtimeName)
@@ -33,7 +33,7 @@ function fixture(runtimeName = 'dsh') {
   mkdirSync(dirname(api), { recursive: true })
   writeFileSync(api, '{"name":"@deepseek-ai/libreoffice-kit"}')
   const require: (specifier: string) => unknown = createRequire(join(runtime, 'package.json'))
-  const hook = installOfficeEngineResolution(runtime)!
+  const hook = installOfficeEngineResolution(runtime, platform)!
   hooks.push(hook)
   return { root, runtime, manifest, require }
 }
@@ -45,6 +45,16 @@ it('resolves engine manifests to physical directories and leaves unrelated modul
     .toMatchObject({ path: realpathSync(dirname(join(f.root, 'app.asar.unpacked', 'dsh', f.manifest))) })
   expect((f.require('node:fs') as typeof import('node:fs')).realpathSync).toBe(realpathSync)
   expect(f.require('@deepseek-ai/libreoffice-kit/package.json')).toEqual({ name: '@deepseek-ai/libreoffice-kit' })
+})
+
+it('loads the kit itself from its unpacked copy on Linux only', () => {
+  const linux = fixture('dsh', 'linux')
+  const unpacked = join(linux.root, 'app.asar.unpacked', 'dsh', 'node_modules/@deepseek-ai/libreoffice-kit/package.json')
+  mkdirSync(dirname(unpacked), { recursive: true })
+  writeFileSync(unpacked, JSON.stringify({ name: '@deepseek-ai/libreoffice-kit', path: realpathSync(dirname(unpacked)) }))
+  expect(linux.require('@deepseek-ai/libreoffice-kit/package.json')).toMatchObject({ path: realpathSync(dirname(unpacked)) })
+  expect(linux.require('@deepseek-ai/libreoffice-kit-darwin-arm64/package.json'))
+    .toMatchObject({ path: realpathSync(dirname(join(linux.root, 'app.asar.unpacked', 'dsh', linux.manifest))) })
 })
 
 it('resolves an absolute engine manifest to its unpacked copy', () => {
