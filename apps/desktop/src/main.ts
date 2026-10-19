@@ -54,6 +54,7 @@ import { desktopClientMetadata, desktopClientVersion } from './client-metadata.t
 import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
 import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
 import { readDesktopSettings } from './settings.ts'
+import { readBrowserSignInCompatibility, writeBrowserSignInCompatibility } from './studio-browser-setting.ts'
 import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
 import { readDesktopRuntime } from './runtime-tree.ts'
 import { DesktopBrowserGuests } from './browser-guests.ts'
@@ -317,6 +318,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
 
 async function main(): Promise<void> {
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
+  const browserSignIn = readBrowserSignInCompatibility(app.getPath('userData'))
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
@@ -403,7 +405,7 @@ async function main(): Promise<void> {
   const applicationUrl = `${SCHEME}://app/`
   let hostUrl: string | undefined
   let hostCookie: string | undefined
-  const browserGuests = new DesktopBrowserGuests(() => hostUrl)
+  const browserGuests = new DesktopBrowserGuests(() => hostUrl, browserSignIn)
   let injections: readonly unknown[] = []
   let welcomeBackend: DesktopWelcomeBackend | undefined
   let reportedLaunch = false
@@ -971,6 +973,8 @@ async function main(): Promise<void> {
     { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } },
     ...process.platform === 'darwin' || process.platform === 'win32'
       ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
+    { label: currentDesktopLocale().messages.browserSignInMenu, type: 'checkbox', checked: browserSignIn,
+      click: () => { void toggleBrowserSignIn().catch((error: unknown) => { console.error(error) }) } },
     ...development ? [
       { type: 'separator' as const },
       { label: currentDesktopLocale().messages.reloadPageMenu, role: 'reload' as const },
@@ -985,6 +989,25 @@ async function main(): Promise<void> {
     { role: 'quit', ...(darwin ? { label: currentDesktopLocale().messages.quitApplication }
       : process.platform === 'win32' ? { label: currentDesktopLocale().messages.exitApplication } : {}) },
   ]
+  /** Confirm the opt-in Browser pane sign-in setting with its trade-offs, store it, and restart to apply it. */
+  const toggleBrowserSignIn = async (): Promise<void> => {
+    const messages = currentDesktopLocale().messages
+    const enable = !browserSignIn
+    const { response } = await dialog.showMessageBox({
+      type: 'question',
+      message: enable ? messages.browserSignInTitleOn : messages.browserSignInTitleOff,
+      detail: enable ? messages.browserSignInDetailOn : messages.browserSignInDetailOff,
+      buttons: [enable ? messages.browserSignInConfirmOn : messages.browserSignInConfirmOff, messages.browserSignInCancel],
+      defaultId: 1,
+      cancelId: 1,
+    })
+    // The click already flipped the checkbox; rebuild it from the setting in effect until the restart.
+    refreshApplicationMenu()
+    if (response !== 0) return
+    writeBrowserSignInCompatibility(app.getPath('userData'), enable)
+    app.relaunch()
+    app.quit()
+  }
   const devToolsItems: MenuItemConstructorOptions[] = [
     { role: 'toggleDevTools', visible: false },
     { role: 'toggleDevTools', visible: false, accelerator: 'F12' },

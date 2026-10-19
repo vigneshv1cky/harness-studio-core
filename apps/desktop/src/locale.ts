@@ -1,6 +1,14 @@
 /** Typed English and Chinese copy owned by the Electron shell. */
 
 export const en = {
+  browserSignInMenu: 'Allow Sign-in in Browser Pane',
+  browserSignInTitleOn: 'Allow sign-in in the Browser pane?',
+  browserSignInTitleOff: 'Turn off sign-in in the Browser pane?',
+  browserSignInDetailOn: 'The Browser pane will use an identity that Google sign-in accepts, and one browser store kept on disk and shared by every workspace, so a sign-in made in one workspace is visible to pages in every other. Google discourages signing in from embedded browsers and may change its checks at any time; use this at your own risk. Passkeys do not work in the pane. Harness Studio restarts to apply the change.',
+  browserSignInDetailOff: 'The Browser pane returns to a separate store for each workspace that is forgotten when Harness Studio quits. Sign-ins in the shared store stay on disk but are not used. Harness Studio restarts to apply the change.',
+  browserSignInConfirmOn: 'Turn On and Restart',
+  browserSignInConfirmOff: 'Turn Off and Restart',
+  browserSignInCancel: 'Cancel',
   cliCommandMenu: 'Manage dsh Command…',
   cliCommandTitle: 'Manage dsh Command',
   cliCommandLocation: 'Desktop command: {path}',
@@ -150,6 +158,14 @@ export const en = {
 export type DesktopMessages = { readonly [Key in keyof typeof en]: string }
 
 export const zh = {
+  browserSignInMenu: '允许在浏览器面板中登录',
+  browserSignInTitleOn: '允许在浏览器面板中登录？',
+  browserSignInTitleOff: '关闭浏览器面板中的登录？',
+  browserSignInDetailOn: '浏览器面板将使用 Google 登录可接受的身份，并使用一个保存在磁盘上、由所有工作区共享的浏览器存储，因此在一个工作区中的登录对其他所有工作区的页面可见。Google 不建议在嵌入式浏览器中登录，且可能随时更改检查方式，使用风险自负。浏览器面板不支持通行密钥。Harness Studio 将重新启动以应用此更改。',
+  browserSignInDetailOff: '浏览器面板将恢复为每个工作区各自独立、退出 Harness Studio 时即清除的存储。共享存储中的登录仍保留在磁盘上，但不再使用。Harness Studio 将重新启动以应用此更改。',
+  browserSignInConfirmOn: '开启并重新启动',
+  browserSignInConfirmOff: '关闭并重新启动',
+  browserSignInCancel: '取消',
   cliCommandMenu: '管理 dsh 命令…',
   cliCommandTitle: '管理 dsh 命令',
   cliCommandLocation: 'Desktop 命令：{path}',

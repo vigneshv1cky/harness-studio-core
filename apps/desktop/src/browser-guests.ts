@@ -1,8 +1,28 @@
 /** Main-process ownership and fixed isolation policy for Sidebar webview guests. */
 import { randomUUID } from 'node:crypto'
+import { fileURLToPath } from 'node:url'
 import { app, session, type BrowserWindow, type Session, type WebContents } from 'electron'
 import type { DesktopBrowserLeaseId, DesktopBrowserOpenRequest, DesktopBrowserReservation } from '@deepseek-ai/dsh-client-ui-sidebar-browser/types'
 import { DESKTOP_IPC } from './ipc.ts'
+
+/**
+ * Sign-in compatibility (Harness Studio, opt-in): one persistent partition shared by every workspace,
+ * so Browser pane sign-ins survive restarts and carry across workspaces like a regular browser profile.
+ */
+const SHARED_PARTITION = 'persist:dsh-sidebar-browser'
+
+/**
+ * Sign-in compatibility: the app's own user-agent string with the Electron and dsh-desktop tokens removed
+ * and a plain app token, `HarnessStudio/1.0`, before Chrome's. Google refuses sign-in both for identities
+ * naming Electron and for ones posing as a bare Chrome; this form passed in a test on 2026-10-16.
+ * @param appAgent - the session's default user-agent string.
+ * @returns the Browser pane's identity.
+ */
+function plainBrowserAgent(appAgent: string): string {
+  return appAgent
+    .replace(/\s(?!(?:Mozilla|AppleWebKit|Chrome|Safari)\/)[^\s/()]+\/[^\s()]+/g, '')
+    .replace(/ Chrome\//, ' HarnessStudio/1.0 Chrome/')
+}
 
 interface GuestLease {
   readonly owner: WebContents
@@ -17,8 +37,12 @@ export class DesktopBrowserGuests {
   private readonly partitions = new Map<string, string>()
   private readonly leases = new Map<DesktopBrowserLeaseId, GuestLease>()
 
-  /** @param hostUrl - current authenticated DSH Host, which guests cannot request. */
-  constructor(private readonly hostUrl: () => string | undefined) {}
+  /**
+   * @param hostUrl - current authenticated DSH Host, which guests cannot request.
+   * @param signInCompatibility - opt-in Harness Studio setting: a shared persistent partition, a plain
+   *   browser identity and a guest preload, so sign-in pages such as Google's accept the pane.
+   */
+  constructor(private readonly hostUrl: () => string | undefined, private readonly signInCompatibility = false) {}
 
   /**
    * Reserve one guest in a workspace's process-lifetime partition.
@@ -32,8 +56,13 @@ export class DesktopBrowserGuests {
     }
     let partition = this.partitions.get(workspace)
     if (partition === undefined) {
-      partition = `dsh-sidebar-browser-${randomUUID()}`
-      this.configureSession(session.fromPartition(partition))
+      if (this.signInCompatibility) {
+        partition = SHARED_PARTITION
+        if (![...this.partitions.values()].includes(partition)) this.configureSession(session.fromPartition(partition))
+      } else {
+        partition = `dsh-sidebar-browser-${randomUUID()}`
+        this.configureSession(session.fromPartition(partition))
+      }
       this.partitions.set(workspace, partition)
     }
     const lease = randomUUID() as DesktopBrowserLeaseId
@@ -88,6 +117,8 @@ export class DesktopBrowserGuests {
         contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false,
         webviewTag: false, plugins: false, navigateOnDragDrop: false, disableDialogs: true,
         devTools: !app.isPackaged,
+        // Sign-in compatibility: reports a real outer window size before page scripts run.
+        ...this.signInCompatibility ? { preload: fileURLToPath(new URL('./preload-browser-guest.cjs', import.meta.url)) } : {},
       })
       params.httpreferrer = ''
     })
@@ -144,6 +175,17 @@ export class DesktopBrowserGuests {
     browserSession.setDevicePermissionHandler(() => false)
     browserSession.setDisplayMediaRequestHandler((_request, callback) => { callback({}) })
     browserSession.on('will-download', (event) => { event.preventDefault() })
+    if (this.signInCompatibility) {
+      // One plain browser identity for every request, workers and service workers included:
+      // set on the session, and enforced on each request's header.
+      const agent = plainBrowserAgent(browserSession.getUserAgent())
+      browserSession.setUserAgent(agent)
+      browserSession.webRequest.onBeforeSendHeaders((details, callback) => {
+        const headers = details.requestHeaders
+        const key = Object.keys(headers).find(name => name.toLowerCase() === 'user-agent') ?? 'User-Agent'
+        callback({ requestHeaders: { ...headers, [key]: agent } })
+      })
+    }
     browserSession.webRequest.onBeforeRequest((details, callback) => {
       const url = new URL(details.url)
       const network = ['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)
