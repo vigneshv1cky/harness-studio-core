@@ -268,6 +268,10 @@ export function createElectronBuilderConfig(
     },
     deb: {
       packageName: 'harness-studio',
+      // `harness-studio` in a terminal is the command-line tool: these are electron-builder's install scripts with
+      // /usr/bin/harness-studio linked to its launcher instead of the app's executable.
+      afterInstall: fileURLToPath(new URL('../installer/linux-after-install.tpl', import.meta.url)),
+      afterRemove: fileURLToPath(new URL('../installer/linux-after-remove.tpl', import.meta.url)),
       // electron-builder's default dependencies plus the sound and GPU buffer libraries Electron loads at start;
       // a minimal Ubuntu 24.04 install lacks libasound, and the app exits before opening a window without it.
       depends: ['libgtk-3-0', 'libnotify4', 'libnss3', 'libxss1', 'libxtst6', 'xdg-utils', 'libatspi2.0-0', 'libuuid1',
