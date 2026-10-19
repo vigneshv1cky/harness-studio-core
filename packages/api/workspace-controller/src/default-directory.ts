@@ -1,5 +1,6 @@
 /** Resolve the Host account's Documents directory for first-use Workspace creation. */
 
+import { stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
 import { runNativeCommand, type NativeCommandRunner } from '@deepseek-ai/dsh-native-command'
@@ -10,6 +11,26 @@ interface DocumentsDirectoryInternals {
   readonly platform?: NodeJS.Platform
   readonly home?: string
   readonly run?: NativeCommandRunner
+  readonly isDirectory?: (path: string) => Promise<boolean>
+}
+
+/** Harness Studio: the Documents folder that holds the first-use Workspace. */
+const WORKSPACE_PARENT = 'Harness Studio'
+/** The folder DeepSeek Harness and earlier Harness Studio builds used; an existing first-use Workspace there is kept. */
+const LEGACY_WORKSPACE_PARENT = 'deepseek-harness'
+
+/**
+ * Report whether a directory exists, treating a missing path as absent.
+ * @param path - absolute path.
+ * @returns whether the path is an existing directory.
+ */
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' || (error as NodeJS.ErrnoException).code === 'ENOTDIR') return false
+    throw error
+  }
 }
 
 /**
@@ -28,10 +49,11 @@ export function validateDocumentsDirectory(directory: string, platform: NodeJS.P
 }
 
 /**
- * Resolve the first-use directory on the Host without creating files.
+ * Resolve the first-use directory on the Host without creating files: `<Documents>/Harness Studio/default-workspace`,
+ * or `<Documents>/deepseek-harness/default-workspace` when that directory already exists.
  * @param documentsDirectory - explicit deployment override for the system Documents directory.
  * @param signal - caller lifetime and lookup deadline.
- * @param internals - platform facts and native command runner.
+ * @param internals - platform facts, native command runner and directory probe.
  * @returns the absolute candidate path.
  */
 export async function defaultWorkspaceDirectory(
@@ -81,5 +103,9 @@ export async function defaultWorkspaceDirectory(
   }
   directory = validateDocumentsDirectory(directory, platform)
   signal.throwIfAborted()
-  return paths.join(directory, 'deepseek-harness', DEFAULT_WORKSPACE_DIRECTORY)
+  // Keep a first-use Workspace that already holds the user's files rather than starting a second, empty one.
+  const legacy = paths.join(directory, LEGACY_WORKSPACE_PARENT, DEFAULT_WORKSPACE_DIRECTORY)
+  if (await (internals.isDirectory ?? isDirectory)(legacy)) return legacy
+  signal.throwIfAborted()
+  return paths.join(directory, WORKSPACE_PARENT, DEFAULT_WORKSPACE_DIRECTORY)
 }

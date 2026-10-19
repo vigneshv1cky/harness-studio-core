@@ -4,9 +4,9 @@ import { defaultWorkspaceDirectory, validateDocumentsDirectory } from '../src/de
 
 describe('system Documents directory', () => {
   it.each([
-    ['darwin', '/Users/a/文档/\n', '/Users/a/文档/deepseek-harness/default-workspace', 'osascript'],
-    ['win32', 'D:\\Redirected Documents\r\n', 'D:\\Redirected Documents\\deepseek-harness\\default-workspace', 'powershell.exe'],
-    ['linux', '/home/a/My Documents\n', '/home/a/My Documents/deepseek-harness/default-workspace', 'xdg-user-dir'],
+    ['darwin', '/Users/a/文档/\n', '/Users/a/文档/Harness Studio/default-workspace', 'osascript'],
+    ['win32', 'D:\\Redirected Documents\r\n', 'D:\\Redirected Documents\\Harness Studio\\default-workspace', 'powershell.exe'],
+    ['linux', '/home/a/My Documents\n', '/home/a/My Documents/Harness Studio/default-workspace', 'xdg-user-dir'],
   ] as const)('uses the %s account directory and preserves spaces and Unicode', async (platform, stdout, path, command) => {
     const run = vi.fn<NativeCommandRunner>(async () => ({ stdout, stderr: '' }))
     const signal = new AbortController().signal
@@ -14,23 +14,31 @@ describe('system Documents directory', () => {
     expect(run).toHaveBeenCalledWith(command, expect.any(Array), signal, 'hidden')
   })
 
+  it('keeps an existing deepseek-harness first-use Workspace instead of starting a second one', async () => {
+    const isDirectory = vi.fn(async (path: string) => path === '/documents/deepseek-harness/default-workspace')
+    await expect(defaultWorkspaceDirectory('/documents', new AbortController().signal, { platform: 'linux', isDirectory }))
+      .resolves.toBe('/documents/deepseek-harness/default-workspace')
+    await expect(defaultWorkspaceDirectory('/other', new AbortController().signal, { platform: 'linux', isDirectory }))
+      .resolves.toBe('/other/Harness Studio/default-workspace')
+  })
+
   it('uses the configured directory without a system lookup', async () => {
     const run = vi.fn<NativeCommandRunner>()
     await expect(defaultWorkspaceDirectory('/documents', new AbortController().signal, { platform: 'linux', run }))
-      .resolves.toBe('/documents/deepseek-harness/default-workspace')
+      .resolves.toBe('/documents/Harness Studio/default-workspace')
     expect(run).not.toHaveBeenCalled()
   })
 
   it.each(['', '\r\n', '/home/a\n', '/home/a/\n'])('falls back to ~/Documents for an unavailable XDG directory %j', async (stdout) => {
     const run: NativeCommandRunner = async () => ({ stdout, stderr: '' })
     await expect(defaultWorkspaceDirectory(undefined, new AbortController().signal, { platform: 'linux', home: '/home/a', run }))
-      .resolves.toBe('/home/a/Documents/deepseek-harness/default-workspace')
+      .resolves.toBe('/home/a/Documents/Harness Studio/default-workspace')
   })
 
   it('falls back to ~/Documents when xdg-user-dir is not installed', async () => {
     const run: NativeCommandRunner = async () => { throw new Error('spawn xdg-user-dir ENOENT') }
     await expect(defaultWorkspaceDirectory(undefined, new AbortController().signal, { platform: 'linux', home: '/home/a', run }))
-      .resolves.toBe('/home/a/Documents/deepseek-harness/default-workspace')
+      .resolves.toBe('/home/a/Documents/Harness Studio/default-workspace')
   })
 
   it('propagates lookup failure and cancellation', async () => {
