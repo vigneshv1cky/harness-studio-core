@@ -47,6 +47,8 @@ interface BenchOptions {
   readStdin?: () => Promise<string>
   sessionId?: string
   json?: boolean
+  /** Run the chat mode over these typed lines instead of one task. */
+  chatLines?: string[]
   observe?: () => Promise<ObservationStub>
   /** Leave the query service unmounted to exercise the fail-loud path. */
   omitSessionQuery?: boolean
@@ -212,6 +214,15 @@ async function bench(script: Script, options: BenchOptions = {}): Promise<{
       internals.stdout = { write: (chunk: string) => { out += chunk; return true } }
       internals.stderr = { write: (chunk: string) => { err += chunk; return true } }
       if (options.readStdin !== undefined) internals.readStdin = options.readStdin
+      if (options.chatLines !== undefined) {
+        const lines = options.chatLines
+        internals.openChat = () => ({
+          async* [Symbol.asyncIterator]() { yield* lines },
+          prompt: () => { order.push('prompt') },
+          onInterrupt: () => {},
+          close: () => {},
+        })
+      }
       const exited = new Promise<number>((resolve) => {
         ctx.provide('appExit', (code: number) => { order.push('exit'); resolve(code) })
       })
@@ -225,6 +236,7 @@ async function bench(script: Script, options: BenchOptions = {}): Promise<{
         ...options.useStdin === true ? {} : { task: options.task ?? 'do the thing' },
         ...options.sessionId === undefined ? {} : { sessionId: options.sessionId },
         ...options.json === undefined ? {} : { json: options.json },
+        ...options.chatLines === undefined ? {} : { chat: true },
       })
       return { code: await exited, out, err, order }
     },
@@ -232,6 +244,25 @@ async function bench(script: Script, options: BenchOptions = {}): Promise<{
 }
 
 describe('headless runner', () => {
+  it('chats over typed lines in one Session, one answer per line, and ends at /exit', async () => {
+    let turn = 0
+    const test = await bench({
+      async afterPrompt(session, message) {
+        await Promise.resolve()
+        const text = message.content.map(block => block.type === 'text' ? block.text : '').join('')
+        appendTurn(session, turn++, message, `answer: ${text}`, true)
+      },
+    }, { chatLines: ['first question', '   ', 'second question', '/exit', 'never sent'] })
+    const result = await test.run()
+    expect(result.code).toBe(0)
+    expect(result.out).toBe('answer: first question\n\nanswer: second question\n\n')
+    expect(result.err).toMatch(/^Chat with test-model in .+\. Enter sends; Ctrl-C stops a reply; Ctrl-D or \/exit quits\.\n/)
+    expect(result.err).toMatch(/\nSession session-[0-9a-f-]+; continue it with --session-id session-[0-9a-f-]+\n$/)
+    expect(result.order).toEqual(['prompt', 'flush', 'prompt', 'prompt', 'flush', 'prompt', 'flush', 'exit'])
+    expect(turn).toBe(2)
+    await test.ctx.fiber.dispose()
+  })
+
   it('waits for parent awakened between idle and child observation', async () => {
     const cleanup = Promise.withResolvers<undefined>()
     const cleaning = Promise.withResolvers<undefined>()

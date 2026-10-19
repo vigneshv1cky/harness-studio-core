@@ -28,6 +28,7 @@
         task: !!js ctx.headlessStartup.task
         sessionId: !!js ctx.headlessStartup.sessionId
         json: !!js ctx.headlessStartup.json
+        chat: !!js ctx.headlessStartup.chat
 
 - id: hmr
   disabled: true

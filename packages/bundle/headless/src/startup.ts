@@ -29,6 +29,8 @@ export interface HeadlessStartupValues {
   sessionId: string | undefined
   /** Whether stdout carries the machine-readable event stream instead of final text. */
   json: boolean
+  /** Harness Studio: whether the invocation opens a chat, given no task at an interactive terminal. */
+  chat: boolean
 }
 
 /**
@@ -49,6 +51,7 @@ Examples:
   echo "run the tests" | dsh --profile headless   read the task from stdin
   dsh --profile headless --json "run the tests"   emit machine-readable run events
   dsh --profile headless --session-id session-… "continue"   resume an existing Session
+  dsh --profile headless                          chat in the terminal (no task, interactive terminal)
 `)
 }
 
@@ -101,10 +104,12 @@ export function apply(ctx: Context): void {
       program.error('error: a task is required, for example: dsh --profile headless "run the tests"')
     }
     const task = program.args.length === 0 ? undefined : joined
-    if (task === undefined && internals.stdinIsTty()) {
+    const options = program.opts<{ json?: boolean; sessionId?: string }>()
+    // No task at an interactive terminal opens a chat; the event stream has no chat form.
+    const chat = task === undefined && internals.stdinIsTty()
+    if (chat && options.json === true) {
       program.error('error: a task is required, for example: dsh --profile headless "run the tests"')
     }
-    const options = program.opts<{ json?: boolean; sessionId?: string }>()
     // A SessionId is opaque, so whitespace is part of the identity: validate
     // emptiness on the trimmed value but hand the runner the exact string.
     const sessionId = options.sessionId
@@ -115,6 +120,7 @@ export function apply(ctx: Context): void {
       task,
       sessionId,
       json: options.json === true,
+      chat,
     } satisfies HeadlessStartupValues)
   })
   parseCmdline(ctx, program)

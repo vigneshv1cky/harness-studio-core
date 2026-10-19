@@ -47,12 +47,15 @@ export interface Config {
   sessionId?: string
   /** Whether stdout carries the machine-readable event stream instead of final text. */
   json?: boolean
+  /** Harness Studio: run a chat over the interactive terminal instead of one task. */
+  chat?: boolean
 }
 
 export const Config: z<Config> = z.object({
   task: z.string(),
   sessionId: z.string(),
   json: z.boolean(),
+  chat: z.boolean(),
 })
 
 /** Outcome of one owned run interval. */
@@ -408,6 +411,75 @@ async function run(ctx: Context, config: Config, io: HeadlessIo): Promise<void> 
  * @param ctx - plugin context carrying core services and the launcher-provided exit request.
  * @param config - validated task and run options.
  */
+/**
+ * Harness Studio: a chat in the terminal. Each line typed is one turn in the same Session, answered on stdout with
+ * reasoning on stderr, as a one-task run prints. Ctrl-C stops the reply in progress, or quits at the prompt; Ctrl-D
+ * or `/exit` quits. The Session id is printed at the end so `--session-id` can continue it.
+ * @param ctx - the runner's context.
+ * @param config - the runner config; `sessionId` continues an existing Session.
+ * @param io - the process streams and exit.
+ */
+async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void> {
+  await ctx.get('loader')?.await()
+  const agents = ctx.get('agents')
+  const defaultModel = ctx.get('agentDefaultModel')
+  const sessions = ctx.get('sessions')
+  if (agents === undefined || defaultModel === undefined || sessions === undefined) return
+  const selection = defaultModel.currentSelection()
+  const agentOptions = { provider: selection.provider, model: selection.model }
+  const setup = (agentCtx: Context): void => {
+    installModelSelection(agentCtx, { current: selection, assembled: undefined })
+  }
+  const sessionId = brandString<SessionId>(config.sessionId ?? `session-${randomUUID()}`)
+  const fs = ctx.get('fs')
+  const cwd = fs === undefined ? process.cwd() : fs.processPath(await fs.resolve('.'))
+  const agent = config.sessionId === undefined
+    ? (await agents.create({ sessionId, meta: { cwd }, agentOptions, setup })).agent
+    : await resolveAgent(ctx, agents, sessionId, agentOptions, setup, cwd)
+  await agent.whenIdle()
+  const subagents = ctx.get('subagents')
+  const input = internals.openChat()
+  let replying = false
+  input.onInterrupt(() => {
+    if (replying) agent.cancel({ kind: 'user' })
+    else input.close()
+  })
+  io.stderr.write(`Chat with ${selection.model} in ${cwd}. Enter sends; Ctrl-C stops a reply; Ctrl-D or /exit quits.\n`)
+  input.prompt()
+  for await (const line of input) {
+    const text = line.trim()
+    if (text === '/exit' || text === '/quit') break
+    if (text === '') {
+      input.prompt()
+      continue
+    }
+    const firstSeq = agent.session.seq
+    const stopReasoning = streamReasoning(ctx, agent, io.stderr)
+    replying = true
+    try {
+      agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+      while (true) {
+        await agent.whenIdle()
+        const idleSeq = agent.session.seq
+        if (!await subagents?.waitForChildren(agent) && agent.status === 'idle' && agent.session.seq === idleSeq) break
+      }
+    } finally {
+      replying = false
+      stopReasoning()
+    }
+    await sessions.flush(agent.session)
+    const outcome = summarize(agent.session, firstSeq)
+    if (outcome.text !== '') io.stdout.write(`${outcome.text}\n\n`)
+    if (outcome.reason?.kind === 'error') io.stderr.write(`dsh: ${outcome.reason.error.code}: ${outcome.reason.error.message}\n`)
+    else if (outcome.reason?.kind === 'aborted') io.stderr.write('dsh: stopped\n')
+    input.prompt()
+  }
+  input.close()
+  await sessions.flush(agent.session)
+  io.stderr.write(`\nSession ${sessionId}; continue it with --session-id ${sessionId}\n`)
+  io.exit(0)
+}
+
 export function apply(ctx: Context, config: Config): void {
   // Read through the global service store, not the property proxy: appExit is
   // an optional host value, never an injected dependency.
@@ -416,5 +488,5 @@ export function apply(ctx: Context, config: Config): void {
     throw new Error('headless-runner: the launcher must provide ctx.appExit before the tree mounts')
   }
   const io: HeadlessIo = { stdout: internals.stdout, stderr: internals.stderr, exit }
-  void run(ctx, config, io).catch((error: unknown) => { fail(io, error, config.json === true) })
+  void (config.chat === true ? chat(ctx, config, io) : run(ctx, config, io)).catch((error: unknown) => { fail(io, error, config.json === true) })
 }
