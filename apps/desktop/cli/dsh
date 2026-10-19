@@ -11,4 +11,14 @@ while [ -L "$launcher" ]; do
   esac
 done
 resources=$(CDPATH= cd -- "$(dirname -- "$launcher")/../../.." && pwd -P)
-ELECTRON_RUN_AS_NODE=1 exec "$resources/../MacOS/DeepSeek Harness" --expose-internals "$resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" "$@"
+# Harness Studio keeps its settings, keys and sessions in ~/.harness-studio, like the app; an explicit
+# DSH_HOME still wins.
+: "${DSH_HOME:=$HOME/.harness-studio}"
+export DSH_HOME
+# A task with no mode runs one headless session in Harness Studio's command-line profile, which adds its
+# connectors, memory and hooks to the base composition. Launcher modes, flags and named profiles pass through.
+case "${1-}" in
+  web|plugin|acp|headless|sdk|sdk-minimal|desktop|harness-studio|--profile|--profile=*|--from-default-profile|--from-default-profile=*|--dump-config|--dump-default-config|--dump-config-schema|--version|-V|--help|-h) ;;
+  *) set -- --profile harness-studio "$@" ;;
+esac
+ELECTRON_RUN_AS_NODE=1 exec "$resources/../MacOS/Harness Studio" --expose-internals "$resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" "$@"

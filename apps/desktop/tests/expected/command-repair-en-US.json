@@ -1,6 +1,6 @@
 [
   {
-    "message": "The Desktop command is installed.",
+    "message": "The harness-studio command is installed.",
     "buttons": [
       "Close",
       "Repair",
@@ -8,7 +8,7 @@
     ]
   },
   {
-    "message": "The Desktop command is installed.",
+    "message": "The harness-studio command is installed.",
     "buttons": [
       "Close"
     ]

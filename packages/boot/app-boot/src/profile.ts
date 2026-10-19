@@ -186,6 +186,14 @@ export const PROFILE_TEMPLATES: Record<string, ProfileTemplate> = {
   headless: {
     bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'],
   },
+  // Harness Studio's command line (the `harness-studio` command): one headless task with the bundled plugins
+  // that work without the app window: MCP connectors, Remember with auto memory, hooks, and Compact's host
+  // half, whose site approval refuses (there is no card to ask with) web fetches to sites the network setting
+  // does not allow. A bundle the installation does not carry is skipped with a notice, so a plain dsh
+  // installation still boots it.
+  'harness-studio': {
+    bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', '@harness-studio/connectors', '@harness-studio/remember', '@harness-studio/hooks', '@harness-studio/compact'],
+  },
   sdk: {
     bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-sdk-app'],
   },

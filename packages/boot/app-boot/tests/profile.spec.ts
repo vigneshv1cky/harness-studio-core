@@ -351,6 +351,10 @@ describe('loadProfile', () => {
     expect(PROFILE_TEMPLATES['sdk-minimal']).toEqual({
       bundles: ['@deepseek-ai/dsh-sdk-minimal'],
     })
+    // Harness Studio's command line: Compact's host half carries the site-approval check there too.
+    expect(PROFILE_TEMPLATES['harness-studio']).toEqual({
+      bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless', '@harness-studio/connectors', '@harness-studio/remember', '@harness-studio/hooks', '@harness-studio/compact'],
+    })
     loadProfile('t', 'web', anchor, home)
     expect(readProfileManifest('t', resolveProfileDir('web', home)).dsh?.profile?.bundles)
       .toEqual([...PROFILE_TEMPLATES.web?.bundles ?? []])

@@ -2,9 +2,9 @@
   "dialogs": [
     {
       "type": "info",
-      "title": "Manage dsh Command",
-      "message": "Add the Desktop command to your terminal.",
-      "detail": "Desktop command: /usr/local/bin/dsh",
+      "title": "Harness Studio Command-Line Tool",
+      "message": "Add the harness-studio command to your terminal, to run tasks from scripts and CI.",
+      "detail": "Harness Studio command: /usr/local/bin/harness-studio",
       "buttons": [
         "Install",
         "Cancel"
@@ -14,9 +14,9 @@
     },
     {
       "type": "info",
-      "title": "Manage dsh Command",
-      "message": "The Desktop command is installed.",
-      "detail": "Desktop command: /usr/local/bin/dsh\n\nCurrent dsh command: /usr/local/bin/dsh",
+      "title": "Harness Studio Command-Line Tool",
+      "message": "The harness-studio command is installed.",
+      "detail": "Harness Studio command: /usr/local/bin/harness-studio\n\nCurrent harness-studio command: /usr/local/bin/harness-studio",
       "buttons": [
         "Close",
         "Repair",
@@ -27,9 +27,9 @@
     },
     {
       "type": "info",
-      "title": "Manage dsh Command",
-      "message": "The Desktop command needs repair.",
-      "detail": "Desktop command: /usr/local/bin/dsh",
+      "title": "Harness Studio Command-Line Tool",
+      "message": "The harness-studio command needs repair.",
+      "detail": "Harness Studio command: /usr/local/bin/harness-studio",
       "buttons": [
         "Close",
         "Repair",
@@ -40,9 +40,9 @@
     },
     {
       "type": "warning",
-      "title": "Manage dsh Command",
-      "message": "The Desktop command is installed.",
-      "detail": "Desktop command: /usr/local/bin/dsh\n\nCurrent dsh command: /opt/homebrew/bin/dsh\n\nAnother dsh takes precedence. Remove or reorder that installation to use the Desktop command by default. You can also run the Desktop command by its full path.",
+      "title": "Harness Studio Command-Line Tool",
+      "message": "The harness-studio command is installed.",
+      "detail": "Harness Studio command: /usr/local/bin/harness-studio\n\nCurrent harness-studio command: /opt/homebrew/bin/harness-studio\n\nAnother harness-studio takes precedence. Remove or reorder that installation to use this app's command by default. You can also run this app's command by its full path.",
       "buttons": [
         "Close",
         "Repair",
@@ -53,9 +53,9 @@
     },
     {
       "type": "info",
-      "title": "Manage dsh Command",
-      "message": "Add the Desktop command to your terminal.",
-      "detail": "Desktop command: /usr/local/bin/dsh\n\nYour shell command could not be verified. An alias or another dsh installation may take precedence.",
+      "title": "Harness Studio Command-Line Tool",
+      "message": "Add the harness-studio command to your terminal, to run tasks from scripts and CI.",
+      "detail": "Harness Studio command: /usr/local/bin/harness-studio\n\nYour shell command could not be verified. An alias or another harness-studio installation may take precedence.",
       "buttons": [
         "Install",
         "Cancel"

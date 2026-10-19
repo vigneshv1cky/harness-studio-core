@@ -112,7 +112,7 @@ export function presentCommandManagement(
 async function shellCommand(): Promise<{ activeCommand?: string; selectionUnknown?: boolean }> {
   const shell = userInfo().shell
   if (shell === null) return { selectionUnknown: true }
-  const script = "printf '\\0DSH_COMMAND\\0'; command -v dsh; printf '\\0'"
+  const script = "printf '\\0DSH_COMMAND\\0'; command -v harness-studio; printf '\\0'"
   const { stdout } = await promisify(execFile)(shell, ['-ilc', script], { timeout: 5000, maxBuffer: 65536 })
   const value = stdout.split('\0DSH_COMMAND\0')[1]?.split('\0')[0]?.trim()
   if (value === undefined) return { selectionUnknown: true }
