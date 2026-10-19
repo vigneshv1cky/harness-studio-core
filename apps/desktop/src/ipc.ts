@@ -20,6 +20,7 @@ export const DESKTOP_IPC = {
   browserAcquire: 'dsh-desktop:browser-acquire',
   browserRelease: 'dsh-desktop:browser-release',
   browserOpenRequested: 'dsh-desktop:browser-open-requested',
+  browserDevtools: 'dsh-desktop:browser-devtools',
   directoryPick: 'dsh-desktop:directory-pick',
   deviceInfo: 'dsh-desktop:device-info',
   settingsSectionTake: 'dsh-desktop:settings-section-take',
@@ -74,6 +75,15 @@ export interface DesktopUpdatePresentation {
 export interface DshDesktopProductApi {
   readonly protocolVersion: 1
   readonly browser: DesktopBrowserBridge
+  /**
+   * Send one allowed DevTools command to a Browser pane page this window owns (Harness Studio patch), or
+   * `Harness.events` with `{ since }` for its buffered console, exception and network events.
+   * @param guest - the page's web contents id (`<webview>.getWebContentsId()`).
+   * @param method - a DevTools Protocol method from the allowed list.
+   * @param params - the method's parameters.
+   * @returns the command's result.
+   */
+  browserDevtools(guest: number, method: string, params?: Record<string, unknown>): Promise<unknown>
   readonly keyboard: DesktopKeyboardApi
   readonly shortcuts: DesktopShortcutsApi
   /**

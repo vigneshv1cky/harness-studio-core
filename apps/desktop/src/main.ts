@@ -58,6 +58,7 @@ import { readBrowserSignInCompatibility, writeBrowserSignInCompatibility } from 
 import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
 import { readDesktopRuntime } from './runtime-tree.ts'
 import { DesktopBrowserGuests } from './browser-guests.ts'
+import { BrowserDevtools } from './browser-devtools.ts'
 import { installDesktopShortcuts } from './keyboard.ts'
 import { DesktopUpdateOverlays } from './update-overlay.ts'
 import { DesktopQuitConfirmation } from './quit-confirmation.ts'
@@ -406,6 +407,7 @@ async function main(): Promise<void> {
   let hostUrl: string | undefined
   let hostCookie: string | undefined
   const browserGuests = new DesktopBrowserGuests(() => hostUrl, browserSignIn)
+  const browserDevtools = new BrowserDevtools((owner, guestId) => browserGuests.guestFor(owner, guestId))
   let injections: readonly unknown[] = []
   let welcomeBackend: DesktopWelcomeBackend | undefined
   let reportedLaunch = false
@@ -713,6 +715,10 @@ async function main(): Promise<void> {
   ipcMain.handle(DESKTOP_IPC.browserRelease, (event, lease: unknown) => {
     assertProductSender(event)
     return browserGuests.release(event.sender, lease)
+  })
+  ipcMain.handle(DESKTOP_IPC.browserDevtools, (event, request: unknown) => {
+    assertProductSender(event)
+    return browserDevtools.send(event.sender, request)
   })
 
   session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['ws://127.0.0.1/*', 'wss://127.0.0.1/*'] }, (details, callback) => {

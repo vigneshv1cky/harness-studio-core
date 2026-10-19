@@ -14,6 +14,7 @@ function createProductApi(): DshDesktopProductApi {
   return {
     protocolVersion: 1,
     browser: createDesktopBrowserBridge(),
+    browserDevtools: (guest, method, params) => ipcRenderer.invoke(DESKTOP_IPC.browserDevtools, { guest, method, params }) as Promise<unknown>,
     deviceInfo: () => ipcRenderer.invoke(DESKTOP_IPC.deviceInfo) as Promise<string>,
     onOpenSettings: (listener) => {
       const handle = (_event: Electron.IpcRendererEvent, section: string): void => { listener(section) }

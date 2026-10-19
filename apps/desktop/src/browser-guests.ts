@@ -50,6 +50,20 @@ export class DesktopBrowserGuests {
    * @param workspace - workspace identity received over IPC.
    * @returns opaque lease and the partition approved for it.
    */
+  /**
+   * The attached guest page with this web contents id that `owner` holds a lease for (Harness Studio patch:
+   * DevTools access is limited to the requesting window's own Browser pane pages).
+   * @param owner - the product document asking.
+   * @param guestId - the page's web contents id.
+   * @returns the guest, or undefined when it is not one of the owner's pages.
+   */
+  guestFor(owner: WebContents, guestId: number): WebContents | undefined {
+    for (const lease of this.leases.values()) {
+      if (lease.owner === owner && lease.guest !== undefined && !lease.guest.isDestroyed() && lease.guest.id === guestId) return lease.guest
+    }
+    return undefined
+  }
+
   acquire(owner: WebContents, workspace: unknown): DesktopBrowserReservation {
     if (typeof workspace !== 'string' || workspace.length === 0 || workspace.length > 4096) {
       throw new Error('desktop browser: a workspace storage identity is required')
