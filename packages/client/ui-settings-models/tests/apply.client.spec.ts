@@ -94,6 +94,20 @@ describe('ui-settings-models apply', () => {
     }
   })
 
+  it('registers no first-run onboarding step in the Harness Studio desktop app', async () => {
+    const { ctx, slots } = await bench()
+    declare(slots)
+    vi.stubGlobal('dshDesktop', {})
+    try {
+      const plugin = ctx.plugin({ inject: [...inject], apply })
+      await plugin.await()
+      expect(slots.entries('settings.onboarding')).toEqual([])
+      expect(slots.entries('settings.section').map(entry => entry.options.id)).toEqual(['models'])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('defaults to browser onboarding and rejects malformed bootstrap options', async () => {
     expect(hostPlugin.Config({})).toEqual({ credentialOnboarding: true })
     expect(hostPlugin.Config['~standard'].validate({ credentialOnboarding: 'false' })).toHaveProperty('issues')

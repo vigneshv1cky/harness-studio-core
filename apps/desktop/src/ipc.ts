@@ -22,6 +22,8 @@ export const DESKTOP_IPC = {
   browserOpenRequested: 'dsh-desktop:browser-open-requested',
   directoryPick: 'dsh-desktop:directory-pick',
   deviceInfo: 'dsh-desktop:device-info',
+  settingsSectionTake: 'dsh-desktop:settings-section-take',
+  settingsSectionOpen: 'dsh-desktop:settings-section-open',
   localeBootstrap: 'dsh-desktop:locale-bootstrap',
   localeChanged: 'dsh-desktop:locale-changed',
   updatesStatus: 'dsh-desktop:updates-status',
@@ -79,6 +81,13 @@ export interface DshDesktopProductApi {
    * @returns `name=value` fields separated by `; `, with no hostname, user name, or serial number.
    */
   deviceInfo(): Promise<string>
+  /**
+   * Receive Settings sections the shell asks the workspace to open, such as `models` after the
+   * welcome window's "Choose a model provider"; a request made before subscription is delivered on subscribe.
+   * @param listener - receives the section id to open.
+   * @returns listener cleanup.
+   */
+  onOpenSettings(listener: (section: string) => void): () => void
   readonly updates: {
     status(): Promise<DesktopUpdatePresentation>
     open(): Promise<void>

@@ -174,14 +174,13 @@ export async function removeProviderProfile(
  * credential opens the setup card instead of showing a row. This is the
  * first-run posture alone — a user who can already reach some provider gets an
  * ordinary row with the missing-key dot, since nothing here is blocking them.
- * @param row - the joined provider row.
- * @param anyUsable - whether any joined row can already serve requests.
+ * @param _row - the joined provider row.
+ * @param _anyUsable - whether any joined row can already serve requests.
  * @returns whether to render the setup card.
  */
-export function needsSetup(row: ProviderRow, anyUsable: boolean): boolean {
-  if (anyUsable || row.entry.provider === 'deepseek-account') return false
-  if (row.entry.settingsPath.length > 0) return false
-  return row.credential?.configured !== true
+export function needsSetup(_row: ProviderRow, _anyUsable: boolean): boolean {
+  // Harness Studio features no provider on first run: each one is an ordinary row or an "Add model provider" choice.
+  return false
 }
 
 /**

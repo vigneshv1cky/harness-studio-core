@@ -47,7 +47,7 @@ export interface WelcomeOperations {
    */
   saveApiKey(value: string): Promise<WelcomeSaveResult>
   /**
-   * Enter the workspace without writing an onboarding-completion setting.
+   * Enter the workspace on Settings → Models without writing an onboarding-completion setting.
    * @returns completion after the workspace opens.
    */
   skip(): Promise<void>
@@ -66,10 +66,11 @@ export interface WelcomeAuthentication {
 }
 
 /**
- * Decide whether a startup or sign-out requires the welcome entry.
+ * Decide whether a startup or sign-out requires the welcome entry. Harness Studio never uses a
+ * DeepSeek account sign-in for models, so only a configured provider key skips the welcome.
  * @param authentication - current account and independently stored API-key facts.
- * @returns true only when neither authentication route is configured.
+ * @returns true when no provider credential is configured.
  */
 export function needsWelcome(authentication: WelcomeAuthentication): boolean {
-  return !authentication.loggedIn && !authentication.hasApiKey
+  return !authentication.hasApiKey
 }

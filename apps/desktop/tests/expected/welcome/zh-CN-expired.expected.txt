@@ -1,1 +1,1 @@
-登录信息已失效，请重新登录
+Harness Studio 不再使用 DeepSeek 账号登录。请选择模型服务以继续。

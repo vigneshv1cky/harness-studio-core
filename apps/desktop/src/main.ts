@@ -777,6 +777,14 @@ async function main(): Promise<void> {
     assertProductSender(event)
     return readDeviceInfo()
   })
+  /** Settings section the workspace opens once it subscribes; set by the welcome window's provider choice. */
+  let pendingSettingsSection: string | undefined
+  ipcMain.handle(DESKTOP_IPC.settingsSectionTake, (event) => {
+    assertProductSender(event)
+    const section = pendingSettingsSection
+    pendingSettingsSection = undefined
+    return section
+  })
   ipcMain.handle(DESKTOP_IPC.onboardingApiKey, async (event) => {
     assertProductSender(event)
     return (await readWelcomeState()).hasApiKey
@@ -1179,7 +1187,12 @@ async function main(): Promise<void> {
           await enterWorkspace()
           return { ok: true }
         },
-        skip: enterWorkspace,
+        // Harness Studio: the welcome window's only other path opens Settings → Models to choose a provider.
+        skip: async () => {
+          pendingSettingsSection = 'models'
+          await enterWorkspace()
+          if (mainWindow !== undefined && !mainWindow.isDestroyed()) mainWindow.webContents.send(DESKTOP_IPC.settingsSectionOpen, 'models')
+        },
       })
       const window = welcomeWindow
       window.once('closed', () => {

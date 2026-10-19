@@ -42,6 +42,8 @@
 
     - id: session-log-deepseek
       name: '@deepseek-ai/dsh-session-log-deepseek'
+      # Harness Studio: Session logs are never uploaded to DeepSeek.
+      disabled: true
 
     - id: typert
       name: '@deepseek-ai/dsh-typert-registry'
@@ -319,6 +321,8 @@
 
     - id: command-feedback
       name: '@deepseek-ai/dsh-command-feedback'
+      # Harness Studio: feedback is not collected or sent.
+      disabled: true
 
     - id: goal
       name: '@deepseek-ai/dsh-goal'
@@ -520,3 +524,5 @@
 
     - id: llm-deepseek-account
       name: '@deepseek-ai/dsh-llm-deepseek-account'
+      # Harness Studio: models never use a DeepSeek account sign-in; DeepSeek stays available with an API key.
+      disabled: true

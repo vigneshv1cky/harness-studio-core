@@ -210,7 +210,12 @@ export function apply(ctx: ClientContext): void {
       },
       inject: shellInjected,
     }, SettingsRoot)
-    return () => { disposeCommand(); disposeSlot() }
+    // Harness Studio: the Desktop shell asks for Settings → Models after its welcome window's provider choice.
+    const desktop = (globalThis as typeof globalThis & {
+      dshDesktop?: { onOpenSettings?: (listener: (section: string) => void) => () => void }
+    }).dshDesktop
+    const disposeOpenRequests = desktop?.onOpenSettings?.((section) => { shellInstance.actions.openSection(section) })
+    return () => { disposeCommand(); disposeSlot(); disposeOpenRequests?.() }
   })
 
   ctx.slots.inject('settings.trigger', () =>

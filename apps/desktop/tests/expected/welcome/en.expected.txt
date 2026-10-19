@@ -1,6 +1,5 @@
-DeepSeek Harness
-DeepSeek Harness
-Welcome to DeepSeek Harness
-Build potential. Explore intelligence.
-Sign in
-Add API Key
+Harness Studio
+Harness Studio
+Welcome to Harness Studio
+Any model, on your code and UI.
+Choose a model provider

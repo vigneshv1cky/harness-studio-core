@@ -150,7 +150,9 @@ export function apply(ctx: ClientContext): void {
     order: -100,
     inject: welcomeInjected,
   }, WelcomeNotice))
-  ctx.slots.inject('settings.onboarding', () => ctx.slots.register({
+  // Harness Studio: the desktop has no DeepSeek sign-in, and its welcome window already leads to Settings → Models.
+  // Registered there, this first-run step appeared once sessions loaded and closed a Settings panel opened earlier.
+  if (!('dshDesktop' in globalThis)) ctx.slots.inject('settings.onboarding', () => ctx.slots.register({
     name: 'settings.onboarding',
     id: 'deepseek-official',
     children: { 'settings.models.sign-in': { kind: 'single', scope: 'root' } },

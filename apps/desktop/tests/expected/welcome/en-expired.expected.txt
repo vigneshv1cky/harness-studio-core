@@ -1,1 +1,1 @@
-You have signed out of your account, please log in again.
+Harness Studio no longer uses DeepSeek account sign-in. Choose a model provider to continue.
