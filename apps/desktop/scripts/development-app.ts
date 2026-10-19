@@ -1,7 +1,8 @@
 /** macOS development bundle that loads the current workspace through Electron. */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 /** Workspace and runtime settings captured for Launch Services cold starts. */
@@ -17,6 +18,30 @@ export interface DevelopmentAppOptions {
   readonly openDevtools: string
 }
 
+const LSREGISTER = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+
+/**
+ * Replace Electron's icon in the bundle with the app's own, so the Dock and Finder show it.
+ * @param source - Square PNG of at least 1024 pixels.
+ * @param target - The bundle's icon file named by CFBundleIconFile.
+ */
+function writeApplicationIcon(source: string, target: string): void {
+  const scratch = mkdtempSync(join(tmpdir(), 'dsh-icon-'))
+  try {
+    const iconset = join(scratch, 'icon.iconset')
+    mkdirSync(iconset)
+    for (const edge of [16, 32, 128, 256, 512]) {
+      for (const [scale, suffix] of [[1, ''], [2, '@2x']] as const) {
+        const pixels = String(edge * scale)
+        execFileSync('/usr/bin/sips', ['-z', pixels, pixels, source, '--out', join(iconset, `icon_${String(edge)}x${String(edge)}${suffix}.png`)], { stdio: 'pipe' })
+      }
+    }
+    execFileSync('/usr/bin/iconutil', ['-c', 'icns', iconset, '-o', target])
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+}
+
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'` }
 
 /**
@@ -26,30 +51,41 @@ function quote(value: string): string { return `'${value.replaceAll("'", "'\\''"
  */
 export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
   const source = dirname(dirname(dirname(options.electron)))
-  const bundle = join(options.directory, 'Harness Dev.app')
-  const executable = join(bundle, 'Contents', 'MacOS', 'HarnessDev')
+  const bundle = join(options.directory, 'Harness Studio Dev.app')
+  const executable = join(bundle, 'Contents', 'MacOS', 'HarnessStudioDev')
+  // Earlier builds named the bundle "Harness Dev" and then "Harness Studio"; drop them so Launch Services
+  // and Spotlight list one development app, distinct from the installed Harness Studio.
+  for (const name of ['Harness Dev.app', 'Harness Studio.app']) {
+    const legacy = join(options.directory, name)
+    if (!existsSync(legacy)) continue
+    execFileSync(LSREGISTER, ['-u', legacy], { stdio: 'pipe' })
+    rmSync(legacy, { recursive: true, force: true })
+  }
   const stamp = join(bundle, 'Contents', 'Resources', 'dsh-development.json')
   const launcher = developmentLauncher(options, bundle)
-  const identity = JSON.stringify({ ...options, launcher, plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
+  const icon = join(options.appRoot, 'resources', 'icon-macos.png')
+  const iconHash = createHash('sha256').update(readFileSync(icon)).digest('hex')
+  const identity = JSON.stringify({ ...options, launcher, iconHash, plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
   if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== identity) {
     rmSync(bundle, { recursive: true, force: true })
     execFileSync('/usr/bin/ditto', [source, bundle])
     const plist = join(bundle, 'Contents', 'Info.plist')
     const values = {
       CFBundleIdentifier: `com.deepseek.harness.dev.${createHash('sha256').update(options.appRoot).digest('hex').slice(0, 12)}`,
-      CFBundleName: 'Harness Dev',
-      CFBundleDisplayName: 'Harness Dev',
-      CFBundleExecutable: 'HarnessDev',
+      CFBundleName: 'Harness Studio Dev',
+      CFBundleDisplayName: 'Harness Studio Dev',
+      CFBundleExecutable: 'HarnessStudioDev',
       CFBundleURLTypes: [{ CFBundleURLName: 'DeepSeek Harness', CFBundleURLSchemes: ['dsh'], CFBundleTypeRole: 'Viewer' }],
     }
     for (const [key, value] of Object.entries(values)) {
       execFileSync('/usr/bin/plutil', ['-replace', key, '-json', JSON.stringify(value), plist])
     }
     writeFileSync(executable, launcher, { mode: 0o755 })
+    writeApplicationIcon(icon, join(bundle, 'Contents', 'Resources', 'electron.icns'))
     writeFileSync(stamp, identity, { mode: 0o600 })
     execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle], { stdio: 'pipe' })
   }
-  execFileSync('/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister', ['-f', bundle])
+  execFileSync(LSREGISTER, ['-f', bundle])
   return executable
 }
 

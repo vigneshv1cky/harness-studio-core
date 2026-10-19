@@ -2,7 +2,7 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
-import { OfficialBrandMark, OfficialBrandName } from './Brand.tsx'
+import { OfficialBrandMark } from './Brand.tsx'
 
 /** Required service: the UI slot registry. */
 export const inject = ['slots']
@@ -15,9 +15,8 @@ export const inject = ['slots']
  */
 export function apply(ctx: ClientContext): void {
   if (process.env.DSH_CLIENT_BUILD_PROFILE !== 'official') return
-  ctx.slots.inject('sidebar.brand.mark', () =>
-    ctx.slots.inject('sidebar.brand.name', function* () {
-      yield ctx.slots.register({ name: 'sidebar.brand.mark' }, OfficialBrandMark)
-      yield ctx.slots.register({ name: 'sidebar.brand.name' }, OfficialBrandName)
-    }))
+  // Harness Studio: only the mark is filled; the name slot keeps the shell's text fallback, the product title.
+  ctx.slots.inject('sidebar.brand.mark', function* () {
+    yield ctx.slots.register({ name: 'sidebar.brand.mark' }, OfficialBrandMark)
+  })
 }

@@ -12,9 +12,9 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
+// Harness Studio registers only the mark; the name hole keeps the shell's product-title fallback.
 const HOLES = [
   'sidebar.brand.mark',
-  'sidebar.brand.name',
 ] as const
 
 const HERO_HOLE = 'conversation.hero.brand.mark'
