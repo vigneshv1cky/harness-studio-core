@@ -2,7 +2,8 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { authenticateWebHost, forwardWebRequest, serveWebDocument } from '../src/web-document.ts'
+import { runInNewContext } from 'node:vm'
+import { BOOT_STYLES_SCRIPT, authenticateWebHost, forwardWebRequest, serveWebDocument } from '../src/web-document.ts'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -25,6 +26,29 @@ it('serves the Web entry and assets without starting or contacting a Host', asyn
   expect(fetch).not.toHaveBeenCalled()
   expect((await serveWebDocument(new Request('dsh-app://app/%2e%2e%2fprivate'), root)).status).toBe(403)
   expect((await serveWebDocument(new Request('dsh-app://app/missing.js'), root)).status).toBe(404)
+})
+
+it('adds stored boot styles to the head before the entry script, and nothing when storage fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'desktop-web-'))
+  roots.push(root)
+  await writeFile(join(root, 'index.html'), '<html><head></head><body><script src="assets/entry.js"></script></body></html>')
+  const html = await (await serveWebDocument(new Request('dsh-app://app/'), root)).text()
+  expect(html.indexOf(BOOT_STYLES_SCRIPT)).toBeGreaterThan(0)
+  expect(html.indexOf(BOOT_STYLES_SCRIPT)).toBeLessThan(html.indexOf('assets/entry.js'))
+  const run = (stored: Record<string, string>, throwing = false) => {
+    const head: { dataset: Record<string, string>; textContent: string }[] = []
+    const keys = Object.keys(stored)
+    const localStorage = {
+      get length() { if (throwing) throw new Error('storage is unavailable'); return keys.length },
+      key: (index: number) => keys[index] ?? null,
+      getItem: (key: string) => stored[key] ?? null,
+    }
+    const document = { head: { append: (element: (typeof head)[number]) => head.push(element) }, createElement: () => ({ dataset: {}, textContent: '' }) }
+    runInNewContext(BOOT_STYLES_SCRIPT, { localStorage, document })
+    return head
+  }
+  expect(run({ 'dsh.boot-style:theme': 'body{color:red}', unrelated: 'x' })).toEqual([{ dataset: { dshBootStyle: 'theme' }, textContent: 'body{color:red}' }])
+  expect(run({ 'dsh.boot-style:theme': 'body{}' }, true)).toEqual([])
 })
 
 it('requires the Host authentication exchange and retains only its cookie value', async () => {

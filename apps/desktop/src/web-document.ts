@@ -7,7 +7,16 @@ const MIME: Readonly<Record<string, string>> = {
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json',
   '.woff2': 'font/woff2', '.png': 'image/png', '.ico': 'image/x-icon',
 }
-const BOOT = '<script>globalThis.__DSH_BOOT_READY__ = Promise.withResolvers()</script>'
+/**
+ * Browser-storage key prefix for styles a plugin wants on screen before the first paint, such as a colour theme it
+ * otherwise applies only once it loads. The boot script adds each stored style, marked with
+ * `data-dsh-boot-style="<rest of the key>"`, ahead of the shell; its owner removes the element once it has applied
+ * the same styling itself. Stored values are CSS text only; the boot script never executes stored code.
+ */
+export const BOOT_STYLE_PREFIX = 'dsh.boot-style:'
+/** Head script that adds the stored boot styles; storage failures leave the page as served. */
+export const BOOT_STYLES_SCRIPT = `try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith(${JSON.stringify(BOOT_STYLE_PREFIX)})){const s=document.createElement('style');s.dataset.dshBootStyle=k.slice(${BOOT_STYLE_PREFIX.length});s.textContent=localStorage.getItem(k)??'';document.head.append(s)}}}catch{}`
+const BOOT = '<script>globalThis.__DSH_BOOT_READY__ = Promise.withResolvers()</script>' + `<script>${BOOT_STYLES_SCRIPT}</script>`
 
 /**
  * Read an application-owned static asset; the index waits for asynchronous Host injections.
