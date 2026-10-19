@@ -26,7 +26,7 @@ import { z as zod } from 'zod'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent'
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
-import type { Session } from '@deepseek-ai/dsh-session'
+import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 
@@ -38,8 +38,28 @@ function resolveWorkspaceRoot(path: string): string {
   return path
 }
 
+/** Width order of the modes, narrowest first. */
+const MODE_WIDTH: Record<SandboxMode, number> = { 'read-only': 0, 'workspace-write': 1, 'danger-full-access': 2 }
+
+/**
+ * A mode a plugin holds one session at or below, such as read-only while plan mode is on, and the reason
+ * the model is given.
+ */
+export interface SandboxCeiling {
+  /** The widest mode the session may resolve to while the ceiling holds. */
+  mode: SandboxMode
+  /** Why, as a clause the model reads, such as `plan mode is on`. */
+  reason: string
+}
+
+/** Reports the ceiling for one session, or `undefined` when it sets none. Called at every resolve, so it must be cheap and synchronous. */
+export type SandboxCeilingSource = (session: Session) => SandboxCeiling | undefined
+
 /** Render the policy without claiming which capabilities are mounted. */
-function renderPolicyContext(policy: SandboxExecutionPolicy): string {
+function renderPolicyContext(policy: SandboxExecutionPolicy, ceiling?: SandboxCeiling): string {
+  if (ceiling !== undefined) {
+    return `Current DSH file policy: ${policy.mode} because ${ceiling.reason}. Operations enforced by the DSH file sandbox cannot widen past ${policy.mode} until that changes, and a sandbox escalation cannot lift it, so do not request one.`
+  }
   switch (policy.mode) {
     case 'read-only':
       return 'Current DSH file policy: read-only. Any available operation enforced by the DSH file sandbox cannot modify files in the standing mode. Do not refuse a required modification from this policy alone: try an available tool normally and follow any denial and escalation guidance it returns.'
@@ -144,27 +164,74 @@ export class SandboxPolicyService extends Service {
         order: scope.systemPrompt.getContextOrder('SANDBOX_POLICY'),
         text: (context) => {
           const session = context.agent?.session
-          return session === undefined
-            ? ''
-            : renderPolicyContext(this.resolve({ session }))
+          if (session === undefined) return ''
+          const ceiling = this.ceilingOf(session)
+          const capped = ceiling !== undefined && MODE_WIDTH[ceiling.mode] < MODE_WIDTH[this.uncappedMode({ session })]
+          return renderPolicyContext(this.resolve({ session }), capped ? ceiling : undefined)
         },
       })
     })
   }
 
+  /** Registered ceiling sources; see {@link limit}. */
+  private readonly ceilings = new Set<SandboxCeilingSource>()
+
+  /**
+   * Hold sessions at or below a mode while a source reports a ceiling for them. A ceiling also caps an
+   * approved escalation, so it is a hard limit for the session, not a default.
+   * @param source - reports the ceiling for a session, or `undefined` for none.
+   * @returns the disposer that removes the source; call it through `ctx.effect`.
+   */
+  limit(source: SandboxCeilingSource): () => void {
+    this.ceilings.add(source)
+    return () => { this.ceilings.delete(source) }
+  }
+
+  /**
+   * The narrowest ceiling any source reports for a session or any session above it. A hold placed on a
+   * session also holds the subagents and workflow children it starts, and theirs: each one's header names
+   * its parent, which is looked up through the agents service while it is live.
+   * @param session - the session to check.
+   * @returns that ceiling, or `undefined` when no source sets one.
+   */
+  ceilingOf(session: Session): SandboxCeiling | undefined {
+    if (this.ceilings.size === 0) return undefined
+    let narrowest: SandboxCeiling | undefined
+    const seen = new Set<string>()
+    for (let current: Session | undefined = session; current !== undefined && !seen.has(current.id);) {
+      seen.add(current.id)
+      for (const source of this.ceilings) {
+        const ceiling = source(current)
+        if (ceiling !== undefined && (narrowest === undefined || MODE_WIDTH[ceiling.mode] < MODE_WIDTH[narrowest.mode])) narrowest = ceiling
+      }
+      const parent: SessionId | undefined = current.header.parentSession
+      current = parent === undefined ? undefined : this.ctx.get('agents')?.get(parent)?.session
+    }
+    return narrowest
+  }
+
+  /** The mode before ceilings: an approved explicit mode, else the session override, else the deployment default. */
+  private uncappedMode(request: SandboxPolicyRequest): SandboxMode {
+    const { session } = request
+    return request.mode ?? (session === undefined ? undefined : this.overrideOf(session)) ?? this.defaultMode
+  }
+
   /**
    * Resolve the complete policy for one capability call. An approved explicit
    * mode outranks the session's last `sandbox/mode` event, which outranks the
-   * deployment default. A session cwd is its workspace-write boundary; the
-   * configured root is the fallback for agentless calls and sessions without a
-   * cwd.
+   * deployment default; the narrowest ceiling a source reports for the session
+   * (see {@link limit}) then caps the result. A session cwd is its
+   * workspace-write boundary; the configured root is the fallback for agentless
+   * calls and sessions without a cwd.
    * @param request - optional session and approved mode override.
    * @returns the fully resolved per-call mode and absolute workspace root.
    */
   resolve(request: SandboxPolicyRequest = {}): SandboxExecutionPolicy {
     const { session } = request
+    const uncapped = this.uncappedMode(request)
+    const ceiling = session === undefined ? undefined : this.ceilingOf(session)
     return {
-      mode: request.mode ?? (session === undefined ? undefined : this.overrideOf(session)) ?? this.defaultMode,
+      mode: ceiling !== undefined && MODE_WIDTH[ceiling.mode] < MODE_WIDTH[uncapped] ? ceiling.mode : uncapped,
       workspaceRoot: resolveWorkspaceRoot(session?.header.cwd ?? this.workspaceRoot),
       ...session === undefined ? {} : { sessionId: session.id },
     }

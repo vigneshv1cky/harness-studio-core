@@ -32,6 +32,7 @@ import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { UserQuestionError, type AskUserQuestionAnswer } from '@deepseek-ai/dsh-user-questions'
 import type { CommandDefinitionId, CommandId } from '@deepseek-ai/dsh-commands'
+import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type { PlanProjection, PlanUnitState } from './types.ts'
@@ -225,6 +226,15 @@ export class PlanModeController extends Service {
 
     ctx.sessionProjections.register(planProjectionDefinition)
 
+    // The guidance asks the agent not to change files; when a sandbox policy is composed, plan mode also
+    // holds the session read-only, including approved escalations, until the plan is approved or plan
+    // mode is switched off. It follows the same state as the guidance section above.
+    ctx.inject(['sandboxPolicy'], (policyCtx) => {
+      policyCtx.effect(() => policyCtx.sandboxPolicy.limit(session => (this.selectedActive(session)
+        ? { mode: 'read-only', reason: 'plan mode is on, and file changes wait until the user approves the plan' }
+        : undefined)), 'dsh-plan-mode: hold planning sessions read-only')
+    })
+
     // The command child activates only when a command registry is composed.
     ctx.inject(['commands'], (commandCtx) => {
       commandCtx.commands.register({
@@ -370,6 +380,11 @@ export class PlanModeController extends Service {
         content: result.content,
       }),
     }))
+  }
+
+  /** The state the guidance section follows: a pending selection, else the logged state; false for an untracked session. */
+  private selectedActive(session: Session): boolean {
+    return this.pendingIntents.get(session)?.active ?? this.ctx.sessionProjections.stateOf(session, 'plan')?.active ?? false
   }
 
   private loggedActive(session: Session): boolean {

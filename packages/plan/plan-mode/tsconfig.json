@@ -33,6 +33,9 @@
       "path": "../../interaction/commands"
     },
     {
+      "path": "../../sandbox/sandbox-policy"
+    },
+    {
       "path": "../../session/session-projection"
     }
   ]

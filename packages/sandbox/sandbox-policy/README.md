@@ -53,6 +53,10 @@ The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-a
 
 A session's mode can be switched at runtime through a UI policy control or an explicit switch; the switch is recorded in the session log and takes effect on the session's next confined call. The switch survives restart through replay, and each session keeps its own mode — two sessions never see each other's state. A switched session keeps its immutable workspace cwd as the writable boundary.
 
+### Holding a session at a narrower mode
+
+Another plugin can hold sessions at or below a mode with `limit(source)`, where the source reports `{ mode, reason }` for a session or nothing. Plan mode uses it to keep a planning session read-only. The narrowest reported ceiling caps the resolved mode, including an approved explicit mode, so an escalation cannot lift it. Register through `ctx.effect` so the source is removed when the registering plugin unloads; `ceilingOf(session)` reports the ceiling in force. A ceiling reported for a session also holds every session started from it: the policy walks each session's `parentSession` through the agents service, so subagents and workflow children of a planning session, and theirs, stay read-only too.
+
 ### Failures and recovery
 
 An invalid configured mode is rejected when the plugin loads, so a typo fails loud instead of silently changing policy. A session without a cwd, and agentless calls, fall back to the configured workspace root; a call with an approved explicit mode uses that mode for exactly that call.
@@ -69,7 +73,7 @@ This section explains policy resolution, the per-session store, and the model-vi
 
 ### Resolution precedence
 
-`resolve({ session, mode })` returns one complete per-call policy: an approved explicit mode outranks the session's last `sandbox/mode` event, which outranks the deployment default. The session's immutable `cwd` supplies the workspace root; otherwise the configured fallback applies. Absolute execution-world spelling is preserved. Enforcing providers canonicalize the root on their own filesystem, so remote `symlink/..` paths are never resolved on the Harness host.
+`resolve({ session, mode })` returns one complete per-call policy: an approved explicit mode outranks the session's last `sandbox/mode` event, which outranks the deployment default, and the narrowest registered ceiling for the session then caps the result. The session's immutable `cwd` supplies the workspace root; otherwise the configured fallback applies. Absolute execution-world spelling is preserved. Enforcing providers canonicalize the root on their own filesystem, so remote `symlink/..` paths are never resolved on the Harness host.
 
 ### The per-session store
 
@@ -126,6 +130,14 @@ Current DSH file policy: workspace-write. Any available operation enforced by th
 
 ```markdown
 Current DSH file policy: danger-full-access. The DSH file sandbox does not restrict file modifications by available operations.
+```
+
+##### Held by a ceiling
+
+When a ceiling narrows the mode, the text names the reason instead:
+
+```markdown
+Current DSH file policy: read-only because plan mode is on, and file changes wait until the user approves the plan. Operations enforced by the DSH file sandbox cannot widen past read-only until that changes, and a sandbox escalation cannot lift it, so do not request one.
 ```
 
 #### Token effect

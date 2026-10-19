@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { Context } from '@deepseek-ai/cordis'
+import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SESSION_FORMAT_VERSION, Session, SessionId } from '@deepseek-ai/dsh-session'
 import SandboxPolicyService, { SANDBOX_MODES, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
@@ -22,7 +22,7 @@ async function mounted(config: { mode?: 'read-only' | 'workspace-write' | 'dange
   return ctx
 }
 
-function session(id: string, cwd?: string): Session {
+function session(id: string, cwd?: string, parent?: Session): Session {
   const sessionId = SessionId(id)
   return Session.create(sessionId, undefined, {
     version: SESSION_FORMAT_VERSION,
@@ -30,6 +30,7 @@ function session(id: string, cwd?: string): Session {
     createdAt: 0,
     isSeeded: false,
     ...cwd === undefined ? {} : { cwd },
+    ...parent === undefined ? {} : { parentSession: parent.id },
   })
 }
 
@@ -224,6 +225,78 @@ describe('sandbox:policy request context', () => {
 
     expect(await policyContext(ctx, resumed)).toContain('workspace-write')
     expect((await ctx.systemPrompt.assemble()).contexts.find(context => context.name === 'sandbox:policy')?.text).toBe('')
+  })
+})
+
+describe('ceilings', () => {
+  async function promptMounted(mode: 'read-only' | 'workspace-write' | 'danger-full-access'): Promise<Context> {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(SessionProjectionRegistry)
+    await ctx.plugin(SandboxPolicyService, { mode, workspaceRoot: '/fallback' })
+    return ctx
+  }
+
+  it('caps the session mode, the session override and an approved escalation, for that session only', async () => {
+    const ctx = await promptMounted('danger-full-access')
+    const planning = session('sess-planning', '/projects/a')
+    const other = session('sess-other', '/projects/b')
+    ctx.sandboxPolicy.limit(target => (target === planning ? { mode: 'read-only', reason: 'plan mode is on' } : undefined))
+    expect(ctx.sandboxPolicy.resolve({ session: planning }).mode).toBe('read-only')
+    expect(ctx.sandboxPolicy.resolve({ session: planning, mode: 'workspace-write' }).mode).toBe('read-only')
+    setSandboxMode(planning, 'workspace-write')
+    expect(ctx.sandboxPolicy.resolve({ session: planning }).mode).toBe('read-only')
+    expect(ctx.sandboxPolicy.resolve({ session: other }).mode).toBe('danger-full-access')
+    expect(ctx.sandboxPolicy.resolve().mode).toBe('danger-full-access')
+  })
+
+  it('holds subagents and workflow children of a held session, however deep, through the agents service', async () => {
+    const ctx = await promptMounted('workspace-write')
+    const planning = session('sess-plan-parent', '/projects/a')
+    const child = session('sess-plan-child', '/projects/a', planning)
+    const grandchild = session('sess-plan-grandchild', '/projects/a', child)
+    const unrelated = session('sess-plan-unrelated', '/projects/a')
+    const live = new Map([planning, child, grandchild].map(s => [s.id, { session: s }]))
+    ctx.provide('agents', { get: (id: string) => live.get(id as never) } as never)
+    let held = true
+    ctx.sandboxPolicy.limit(target => (held && target === planning ? { mode: 'read-only', reason: 'plan mode is on' } : undefined))
+    expect(ctx.sandboxPolicy.resolve({ session: child }).mode).toBe('read-only')
+    expect(ctx.sandboxPolicy.resolve({ session: grandchild, mode: 'danger-full-access' }).mode).toBe('read-only')
+    expect(await policyContext(ctx, grandchild)).toContain('read-only because plan mode is on')
+    expect(ctx.sandboxPolicy.resolve({ session: unrelated }).mode).toBe('workspace-write')
+    held = false
+    expect(ctx.sandboxPolicy.resolve({ session: grandchild }).mode).toBe('workspace-write')
+    // A parent that is no longer live ends the walk instead of failing.
+    held = true
+    live.delete(child.id)
+    expect(ctx.sandboxPolicy.resolve({ session: grandchild }).mode).toBe('workspace-write')
+  })
+
+  it('applies the narrowest ceiling and never widens a narrower mode', async () => {
+    const ctx = await promptMounted('read-only')
+    const target = session('sess-narrow', '/projects/a')
+    ctx.sandboxPolicy.limit(() => ({ mode: 'workspace-write', reason: 'wide' }))
+    expect(ctx.sandboxPolicy.resolve({ session: target }).mode).toBe('read-only')
+    expect(ctx.sandboxPolicy.resolve({ session: target, mode: 'danger-full-access' }).mode).toBe('workspace-write')
+    ctx.sandboxPolicy.limit(() => ({ mode: 'read-only', reason: 'narrow' }))
+    expect(ctx.sandboxPolicy.ceilingOf(target)).toEqual({ mode: 'read-only', reason: 'narrow' })
+    expect(ctx.sandboxPolicy.resolve({ session: target, mode: 'danger-full-access' }).mode).toBe('read-only')
+  })
+
+  it('tells the model why the session is held, and stops when the source is removed', async () => {
+    const ctx = await promptMounted('workspace-write')
+    const target = session('sess-told', '/projects/a')
+    const remove = ctx.sandboxPolicy.limit(() => ({ mode: 'read-only', reason: 'plan mode is on' }))
+    expect(await policyContext(ctx, target)).toBe('Current DSH file policy: read-only because plan mode is on. Operations enforced by the DSH file sandbox cannot widen past read-only until that changes, and a sandbox escalation cannot lift it, so do not request one.')
+    remove()
+    expect(ctx.sandboxPolicy.resolve({ session: target }).mode).toBe('workspace-write')
+    expect(await policyContext(ctx, target)).toContain('Current DSH file policy: workspace-write.')
+  })
+
+  it('keeps the ordinary text when the ceiling does not narrow the mode', async () => {
+    const ctx = await promptMounted('read-only')
+    ctx.sandboxPolicy.limit(() => ({ mode: 'read-only', reason: 'plan mode is on' }))
+    expect(await policyContext(ctx, session('sess-same', '/projects/a'))).toMatch(/^Current DSH file policy: read-only\. Any available operation/)
   })
 })
 

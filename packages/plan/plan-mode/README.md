@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-Plan mode asks an agent to explore and design before execution, then presents the finished plan for your approval. Enter it with `/plan`, optionally with a message or ordered image and file attachments; leave with `/plan off`, approve the review to continue, or return feedback for more planning. Deployment-defined guidance controls planning behavior, but every tool remains available, so use sandbox mode and approval prompts for enforced limits. The active state survives session resume and forks. Choose it when you want a reviewed plan before the agent acts.
+Plan mode asks an agent to explore and design before execution, then presents the finished plan for your approval. Enter it with `/plan`, optionally with a message or ordered image and file attachments; leave with `/plan off`, approve the review to continue, or return feedback for more planning. Deployment-defined guidance controls planning behavior. Every tool stays listed, and when a sandbox policy is composed the session is also held read-only: file changes the sandbox governs are denied, even through an approved escalation, until the plan is approved or plan mode is switched off. The active state survives session resume and forks. Choose it when you want a reviewed plan before the agent acts.
 
 ## Table of Contents
 
@@ -29,7 +29,7 @@ When plan mode is active, the agent works under your instructions and presents i
 
 ### When to choose it
 
-Choose plan mode when the agent should explore and design before executing and you want to approve the plan first. It does not restrict the agent: every tool stays callable, so use sandbox mode and approval prompts when you need enforced limits. Skip it when the agent should act on your requests immediately, without a planning phase.
+Choose plan mode when the agent should explore and design before executing and you want to approve the plan first. Every tool stays callable, but with a sandbox policy composed the session resolves read-only while plan mode is on, so commands and file tools cannot change files until you approve the plan; subagents and workflow children it starts are held read-only too. Skip it when the agent should act on your requests immediately, without a planning phase.
 
 ### Minimal configuration
 
@@ -78,7 +78,7 @@ This section explains the design decisions behind the package and points at the 
 
 ### Design philosophy
 
-Plan mode is a product package, not a capability seam: there is no swappable backend, so the state, guidance, command, and exit tool live in one place. The durable stance is one log-only whole-value-replace event, never a live mirror, so resume, fork, and compaction recover it by folding the log. Guidance is a soft layer — the package registers one prompt section and one tool, and restrains through text rather than filtering capabilities.
+Plan mode is a product package, not a capability seam: there is no swappable backend, so the state, guidance, command, and exit tool live in one place. The durable stance is one log-only whole-value-replace event, never a live mirror, so resume, fork, and compaction recover it by folding the log. Guidance is a soft layer — the package registers one prompt section and one tool and filters no capabilities. Enforcement goes through the sandbox: when `ctx.sandboxPolicy` is composed, the package registers a read-only ceiling for every session whose selected plan state (a pending selection, else the logged state) is active, the same state the prompt section follows.
 
 ### Durable state and step-boundary appends
 
@@ -181,7 +181,7 @@ Mode transitions do not change the tool catalog; plan arguments and review resul
 
 These limits describe when plan mode does not behave as you might expect or needs extra care. They are current package constraints, not a roadmap.
 
-- **Guidance, not enforcement** — plan mode restrains through text only; deployments that need enforced restrictions configure sandbox mode and approval policy independently.
+- **Enforcement needs a sandbox policy** — without `ctx.sandboxPolicy`, plan mode restrains through text only. The read-only ceiling covers what the sandbox governs (file effects of confined commands and file tools), not network access or tools outside the sandbox.
 - **Pending selections are process-local** — a selection made after the turn's final accepted pre-step is lost if the process exits before another accepted in-turn pre-step; the UI must reapply it.
 - **No creation-time plan option** — forked agents inherit logged plan state, while newly spawned agents begin inactive.
 - **Live children cannot open the review** — a child owned by another live agent fails the `exit_plan_mode` call and is told to include the unresolved decision in its final result; durable fork lineage alone does not prevent a session resumed as a runtime root from opening the review.

@@ -13,6 +13,7 @@ import UserQuestionService, {
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import { PtcRuntime, type PtcRunRequest, type PtcRunResult } from '@deepseek-ai/dsh-ptc-runtime'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import SandboxPolicyService from '@deepseek-ai/dsh-sandbox-policy'
 import { turnBoundaryProjectionDefinition } from '@deepseek-ai/dsh-agent-loop'
 import PlanModeController, { EXIT_PLAN_MODE, planProjectionDefinition, resolveConfig } from '../src/index.ts'
 import type { PlanModeConfig } from '../src/index.ts'
@@ -586,6 +587,49 @@ describe('no execution gating beyond the exit tool', () => {
       const result = await execute(ctx, name, agent)
       expect(result.isError).toBe(false)
     }
+  })
+})
+
+describe('read-only while planning', () => {
+  async function setupWithPolicy(): Promise<{ ctx: Context, plan: { dispose(): Promise<void> } }> {
+    const ctx = new Context()
+    await mountProjectionSeam(ctx)
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: '/workspace' })
+    const plan = await ctx.plugin(PlanModeController, PLAN_CONFIG)
+    return { ctx, plan }
+  }
+
+  it('holds the session read-only while plan mode is on, and releases it when plan mode ends', async () => {
+    const { ctx } = await setupWithPolicy()
+    const agent = await agentWithSession(ctx)
+    const other = await agentWithSession(ctx, 'agent-2')
+    expect(ctx.sandboxPolicy.resolve({ session: agent.session }).mode).toBe('workspace-write')
+    expect(ctx.planMode.set(agent, true)).toBe('committed')
+    expect(ctx.sandboxPolicy.resolve({ session: agent.session }).mode).toBe('read-only')
+    expect(ctx.sandboxPolicy.resolve({ session: agent.session, mode: 'danger-full-access' }).mode).toBe('read-only')
+    expect(ctx.sandboxPolicy.resolve({ session: other.session }).mode).toBe('workspace-write')
+    expect(ctx.planMode.set(agent, false)).toBe('committed')
+    expect(ctx.sandboxPolicy.resolve({ session: agent.session }).mode).toBe('workspace-write')
+  })
+
+  it('follows a pending selection during an open turn, as the guidance does', async () => {
+    const { ctx } = await setupWithPolicy()
+    const agent = await agentWithSession(ctx, 'agent-1', { active: true })
+    openTurn(agent.session)
+    expect(ctx.planMode.set(agent, false)).toBe('queued')
+    expect(ctx.sandboxPolicy.resolve({ session: agent.session }).mode).toBe('workspace-write')
+    expect(ctx.planMode.set(agent, true)).toBe('cancelled')
+    expect(ctx.sandboxPolicy.resolve({ session: agent.session }).mode).toBe('read-only')
+  })
+
+  it('stops holding sessions when the plan-mode plugin is disposed', async () => {
+    const { ctx, plan } = await setupWithPolicy()
+    const agent = await agentWithSession(ctx, 'agent-1', { active: true })
+    expect(ctx.sandboxPolicy.resolve({ session: agent.session }).mode).toBe('read-only')
+    await plan.dispose()
+    expect(ctx.sandboxPolicy.resolve({ session: agent.session }).mode).toBe('workspace-write')
   })
 })
 
