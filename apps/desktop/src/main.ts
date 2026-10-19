@@ -317,6 +317,15 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
   return window
 }
 
+/**
+ * Harness Studio: the packaged macOS app ships computer use's native helper in Resources/runtime/cua
+ * (prepare-runtime.ts). Its path, handed to the Host, is what the bundled Compact plugin's computer-use entries read.
+ */
+function computerUseEnvironment(): Record<string, string> {
+  if (!app.isPackaged || process.platform !== 'darwin') return {}
+  return { DSH_CUA_HELPER: join(process.resourcesPath, 'runtime', 'cua', 'dsh-cua-native') }
+}
+
 async function main(): Promise<void> {
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
   const browserSignIn = readBrowserSignInCompatibility(app.getPath('userData'))
@@ -467,7 +476,7 @@ async function main(): Promise<void> {
   const backend = new DesktopBackendController((onFailure) => {
     const hostInspectPort = developmentHostInspectPort(development)
     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
-      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
+      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion(), ...computerUseEnvironment() }, onFailure,
       primaryRuntime,
       resources, (next) => { platformView.setSession(next) })
     return {

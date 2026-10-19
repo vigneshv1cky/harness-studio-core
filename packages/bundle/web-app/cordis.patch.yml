@@ -593,3 +593,16 @@
       name: '@deepseek-ai/dsh-agent-preset-registry'
       config:
         default: standard
+
+# Harness Studio: computer use on macOS, Harness's provider registry and its macOS provider, with the native
+# helper the packaged app ships in Resources/runtime/cua and hands to the Host as DSH_CUA_HELPER (main.ts). The
+# development app sets DSH_CUA_HELPER to a helper built with `swift build`. Off on other systems and without a helper.
+- insert:
+    - id: cua-provider-registry
+      name: '@deepseek-ai/dsh-computer-use'
+      disabled: !!js process.platform !== 'darwin' || !process.env.DSH_CUA_HELPER
+    - id: cua
+      name: '@deepseek-ai/dsh-experimental-cua-macos'
+      disabled: !!js process.platform !== 'darwin' || !process.env.DSH_CUA_HELPER
+      config:
+        helperPath: !!js process.env.DSH_CUA_HELPER

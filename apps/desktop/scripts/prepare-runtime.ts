@@ -48,6 +48,23 @@ function prepareCli({ platform, arch }: DesktopTarget): void {
   cpSync(join(import.meta.dirname, 'command-path.ps1'), join(cli, 'command-path.ps1'))
 }
 
+/**
+ * Harness Studio: build macOS computer use's native helper from the checked-in Swift sources and ship it in
+ * Resources/runtime/cua, outside app.asar so it can run. The app hands its path to the Host (main.ts), and the
+ * bundled Compact plugin turns computer use on when that path is set.
+ */
+function prepareComputerUseHelper({ platform, arch }: DesktopTarget): void {
+  if (platform !== 'darwin') return
+  const packagePath = join(import.meta.dirname, '..', '..', '..', 'packages', 'experimental', 'cua-macos', 'native')
+  const build = ['swift', 'build', '--package-path', packagePath, '-c', 'release', '--arch', arch === 'x64' ? 'x86_64' : 'arm64']
+  execFileSync('xcrun', [...build, '--product', 'dsh-cua-native'], { stdio: 'inherit' })
+  const products = execFileSync('xcrun', [...build, '--show-bin-path'], { encoding: 'utf8' }).trim()
+  const helper = join(RUNTIME_ROOT, 'cua', 'dsh-cua-native')
+  mkdirSync(join(RUNTIME_ROOT, 'cua'), { recursive: true })
+  cpSync(join(products, 'dsh-cua-native'), helper)
+  chmodSync(helper, 0o755)
+}
+
 async function main(): Promise<void> {
   const { values } = parseArgs({ options: { 'defer-primary-runtime-smoke': { type: 'boolean', default: false } } })
   const target = desktopTargetPlatform(resolveDesktopBuildTarget())
@@ -59,6 +76,7 @@ async function main(): Promise<void> {
   const { pnpm } = await readPrimaryRuntime(join(RUNTIME_ROOT, 'primary-runtime'))
   if (pnpm === undefined) throw new Error('desktop runtime: primary-runtime manifest has no pnpm version')
   await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'prepare:cli', async () => { prepareCli(target) })
+  await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'prepare:computer-use', async () => { prepareComputerUseHelper(target) })
   writeFileSync(join(RUNTIME_ROOT, 'versions.json'), `${JSON.stringify({
     schemaVersion: 1,
     node: nodeVersion,
