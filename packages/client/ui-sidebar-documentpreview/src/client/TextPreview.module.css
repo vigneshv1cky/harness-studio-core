@@ -278,6 +278,39 @@
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-interactive-bg-hover);
 }
+/* Rendered / Source for Markdown files: two segments in one rounded frame. */
+.viewSwitch {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 7px;
+}
+
+.viewOption {
+  height: 20px;
+  padding: 0 8px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.viewOption:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
+.viewOption[aria-pressed='true'] {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
 .viewerTool {
   flex: none;
   width: auto;

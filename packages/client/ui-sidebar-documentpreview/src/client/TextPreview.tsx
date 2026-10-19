@@ -29,11 +29,32 @@ import { binaryDocumentPath, matchingDocumentPreviews } from './document/registr
 import type { DocumentPreviewDefinition } from './document/registry.ts'
 import { unviewableBinaryPath } from './document/unviewable.ts'
 import { PLAIN_BODY_ID } from './text/index.ts'
+import { CODE_BODY_ID } from './code/index.ts'
+import { MARKDOWN_BODY_ID } from './markdown/index.ts'
 import { loadedPages, lastLineLoaded, scrollToLine } from './text/lines.ts'
 import css from './TextPreview.module.css'
 
 export { linesOf, loadedPages, lastLineLoaded, scrollToLine } from './text/lines.ts'
 export type { LoadedPage } from './text/lines.ts'
+
+/** Markdown files open in the reader's last choice: rendered, or their source. */
+export type MarkdownView = 'rendered' | 'source'
+
+/**
+ * Browser storage key for that choice. Harness Studio's Files tab reads and writes the same key, so
+ * one choice applies to both places a Markdown file opens.
+ */
+export const MARKDOWN_VIEW_KEY = 'harness-studio.markdown-view'
+
+/** @returns the remembered Markdown view; rendered when none is stored or storage is unavailable. */
+export function readMarkdownView(): MarkdownView {
+  try { return globalThis.localStorage?.getItem(MARKDOWN_VIEW_KEY) === 'source' ? 'source' : 'rendered' } catch { return 'rendered' }
+}
+
+/** @param view - the choice to remember; storage failures leave it for this tab only. */
+function writeMarkdownView(view: MarkdownView): void {
+  try { globalThis.localStorage?.setItem(MARKDOWN_VIEW_KEY, view) } catch { /* private storage: not remembered */ }
+}
 
 /** Private registration inputs; the framework binds the registry source to useDocumentPreviews. */
 export interface TextPreviewInjected extends TextInjected {
@@ -73,7 +94,16 @@ export function TextPreview({
     const fallback = definitions.find(definition => definition.id === PLAIN_BODY_ID)
     return fallback === undefined ? matched : [...matched, fallback]
   }, [definitions, file.path, unviewable])
-  const selected = candidates.find(candidate => candidate.id === state?.rendererId) ?? candidates[0]
+  // A Markdown file offers a Rendered / Source switch in place of the viewer menu: the Markdown renderer,
+  // and the highlighted code viewer (plain text when that is missing). A tab with no manual choice opens
+  // in the remembered view. A higher-ranked extension viewer keeps the menu and its default.
+  const markdownViews = useMemo(() => {
+    const rendered = candidates[0]?.id === MARKDOWN_BODY_ID ? candidates[0] : undefined
+    const source = candidates.find(candidate => candidate.id === CODE_BODY_ID) ?? candidates.find(candidate => candidate.id === PLAIN_BODY_ID)
+    return rendered === undefined || source === undefined ? undefined : { rendered, source }
+  }, [candidates])
+  const [markdownView, setMarkdownView] = useState(readMarkdownView)
+  const selected = candidates.find(candidate => candidate.id === state?.rendererId) ?? markdownViews?.[markdownView] ?? candidates[0]
   const mode = selected?.loading
   const contentRendererId = mode === 'renderer' ? selected?.id : undefined
   const current = (state?.mode ?? 'text-pages') === mode && state?.contentRendererId === contentRendererId ? state : undefined
@@ -264,7 +294,23 @@ export function TextPreview({
         )}
       <div className={css.header}>
         <PathLabel path={displayPath} className={css.path} data-textpreview-path />
-        {candidates.length > 1
+        {markdownViews !== undefined && (
+          <div className={css.viewSwitch} role="group" aria-label={t('markdownView')} data-markdown-view-switch>
+            {(['rendered', 'source'] as const).map(view => (
+              <button
+                key={view}
+                type="button"
+                className={css.viewOption}
+                aria-pressed={selected.id === markdownViews[view].id}
+                data-markdown-view={view}
+                onClick={() => { writeMarkdownView(view); setMarkdownView(view); actions.selected(tab.id, markdownViews[view].id) }}
+              >
+                {t(`markdownView.${view}`)}
+              </button>
+            ))}
+          </div>
+        )}
+        {markdownViews === undefined && candidates.length > 1
           && (
             <Menu
               open={menuOpen}

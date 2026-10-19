@@ -15,6 +15,7 @@ import type { DocumentPreviewProps } from '../src/client/document/contract.ts'
 import type { DocumentLoadMode } from '../src/client/document/registry.ts'
 import type { WorkspaceFilesReadRemote } from '../src/client/rpc.ts'
 import { PLAIN_BODY_ID } from '../src/client/text/index.ts'
+import { MARKDOWN_VIEW_KEY } from '../src/client/TextPreview.tsx'
 
 const SESSION = 'documents' as SessionId
 const SHORTCUT_CATALOG: readonly never[] = []
@@ -174,5 +175,25 @@ describe('document extension seat', () => {
     await act(async () => { await remove!() })
     await waitFor(() => { expect(h.view.container.querySelector('[data-document-markdown]')).not.toBeNull() })
     expect(h.read).toHaveBeenCalledOnce()
+  })
+
+  it('switches a Markdown file between rendered and source, and opens the next one in the remembered view', async () => {
+    localStorage.removeItem(MARKDOWN_VIEW_KEY)
+    try {
+      const h = await boot()
+      h.open('notes.md')
+      await waitFor(() => { expect(h.view.container.querySelector('[data-document-markdown]')).not.toBeNull() })
+      expect(h.view.container.querySelector('[data-document-viewer-menu]')).toBeNull()
+      const option = (view: string) => h.view.container.querySelector<HTMLButtonElement>(`[data-markdown-view="${view}"]`)!
+      expect(option('rendered').getAttribute('aria-pressed')).toBe('true')
+      fireEvent.click(option('source'))
+      await waitFor(() => { expect(h.view.container.querySelector('[data-code-preview]')).not.toBeNull() })
+      expect(option('source').getAttribute('aria-pressed')).toBe('true')
+      expect(localStorage.getItem(MARKDOWN_VIEW_KEY)).toBe('source')
+      h.open('other.md')
+      await waitFor(() => { expect(h.view.container.querySelector('[data-textpreview-url$="other.md"] [data-code-preview]')).not.toBeNull() })
+    } finally {
+      localStorage.removeItem(MARKDOWN_VIEW_KEY)
+    }
   })
 })
