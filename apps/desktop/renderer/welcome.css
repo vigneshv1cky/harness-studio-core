@@ -341,3 +341,63 @@ body {
 .actions .welcome-loading { color: inherit; }
 
 .auth-waiting .copy-link:disabled { cursor: default; }
+
+/* Harness Studio: a compact welcome. The mark, greeting and action sit together in the middle of a
+   420 x 340 window instead of being spread over 600 x 700, and the copy uses the system font. */
+.welcome {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 20px;
+  padding: 0 32px 28px;
+}
+
+.brand {
+  width: auto;
+  height: 26px;
+}
+
+.tagline {
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 22px;
+  letter-spacing: -0.01em;
+}
+
+.tagline em,
+:lang(en) .tagline em {
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.tagline > p {
+  margin-top: 4px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+  letter-spacing: 0;
+}
+
+.tagline .key-error {
+  position: static;
+  margin-top: 8px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.actions {
+  align-self: center;
+  gap: 8px;
+  width: 200px;
+}
+
+.actions button {
+  height: 32px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 18px;
+}
