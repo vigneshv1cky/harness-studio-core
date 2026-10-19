@@ -1,6 +1,6 @@
 - menu:
   - text: Group by
-  - menuitem "WorkSpace"
+  - menuitem "Workspace"
   - menuitem "Workspace Tree"
   - menuitem "In one list"
   - separator

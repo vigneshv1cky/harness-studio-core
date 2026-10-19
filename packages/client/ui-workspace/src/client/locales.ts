@@ -147,7 +147,7 @@ export const en = {
   'section.sessions': 'Sessions',
   'viewOptions.label': 'View options',
   'groupBy.label': 'Group by',
-  'groupBy.workspace': 'WorkSpace',
+  'groupBy.workspace': 'Workspace',
   'groupBy.workspaceTree': 'Workspace Tree',
   'groupBy.flat': 'In one list',
   'orderBy.label': 'Order by',

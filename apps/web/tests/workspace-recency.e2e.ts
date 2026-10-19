@@ -123,7 +123,7 @@ describe('web e2e: workspace recency', () => {
     await pick('Manual')
     await expect.poll(titles).toEqual(TITLES)
     await pick('Last updated')
-    await pick('WorkSpace')
+    await pick('Workspace')
     await pick('Manual')
     const reconnectWarningStart = tripwire.warnings.length
     holdWorkspace = true
@@ -145,7 +145,7 @@ describe('web e2e: workspace recency', () => {
     })).toBe(true)
     holdWorkspace = false
     releaseWorkspace!()
-    await pick('WorkSpace')
+    await pick('Workspace')
     acknowledgeReloadConnectionLoss(tripwire, reconnectWarningStart)
     await expect.poll(titles).toEqual(['New Session', ...TITLES])
     await compareOrRefreshGolden(
