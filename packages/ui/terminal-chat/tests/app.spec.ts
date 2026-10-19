@@ -11,13 +11,14 @@ function fakeTerminal() {
     columns: 80, rows: 30, isTTY: true,
     write: (chunk: string, done?: () => void) => { written += chunk; done?.(); return true },
   })
-  const stdin = Object.assign(new EventEmitter(), {
+  const input = new EventEmitter()
+  const stdin = Object.assign(input, {
     isTTY: true, rawModes: [] as boolean[],
     setRawMode(mode: boolean) { this.rawModes.push(mode); return this },
     setEncoding() { return this }, ref() { return this }, unref() { return this }, resume() { return this }, pause() { return this },
     queued: [] as string[],
     read() { return this.queued.shift() ?? null },
-    send(text: string) { this.queued.push(text); this.emit('readable') },
+    send(text: string) { this.queued.push(text); input.emit('readable') },
   })
   return { stdout, stdin, screen: () => written.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '') }
 }

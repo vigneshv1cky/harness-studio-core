@@ -360,10 +360,10 @@ describe('headless runner', () => {
         emitChunk(agent, { type: 'text-delta', index: 4, text: 'not live' })
         emitChunk(agent, { type: 'block-end', index: 4, block: { type: 'text', text: 'not live' } })
         emitChunk(agent, { type: 'reasoning-delta', index: 5, text: 'then a call' })
-        emitChunk(agent, { type: 'tool-call-delta', index: 6, callId: ToolCallId('c'), name: 'bash', argumentsDelta: '{}' })
+        emitChunk(agent, { type: 'tool-call-delta', index: 6, id: ToolCallId('c'), name: 'bash', argumentsDelta: '{}' })
         emitChunk(agent, { type: 'reasoning-delta', index: 7, text: 'last\n' })
         emitChunk(agent, { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } })
-        emitChunk(agent, { type: 'finish', reason: 'stop' })
+        emitChunk(agent, { type: 'finish', reason: { kind: 'stop' } })
         emitChunk(agent, { type: 'reasoning-delta', index: 8, text: 'trailing' })
         const state = frameStates.get(agent)
         if (state !== undefined) {
@@ -378,7 +378,7 @@ describe('headless runner', () => {
         session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('call-3'), name: 'todo_write', arguments: '{"items":[]}' })
         session.append('tool/result', {
           turn: 1, step: 1,
-          message: createToolResultMessage({ callId: ToolCallId('call-unknown'), content: [{ type: 'image', data: 'x', mimeType: 'image/png' }], isError: true }),
+          message: createToolResultMessage({ callId: ToolCallId('call-unknown'), content: [], isError: true }),
         }, { surfaceOp: 'append' })
         session.append('step/end', { turn: 1, step: 1 })
         session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
