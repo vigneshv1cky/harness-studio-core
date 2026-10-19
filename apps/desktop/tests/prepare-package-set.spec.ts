@@ -9,6 +9,10 @@ function packed(name: string, manifest: Record<string, unknown> = {}): PackedDes
   return { tarball: `${name}.tgz`, manifest: { name, version: '1.0.0', ...manifest } }
 }
 
+/** Harness Studio's bundled plugins, which every package set must include. */
+const STUDIO_PLUGINS = ['@harness-studio/compact', '@harness-studio/connectors', '@harness-studio/devpreview', '@harness-studio/editor', '@harness-studio/hooks', '@harness-studio/remember', '@harness-studio/sessions', '@harness-studio/terminal', '@harness-studio/undo', '@harness-studio/watch']
+const studioPlugins = (): [string, PackedDesktopPackage][] => STUDIO_PLUGINS.map(name => [name, packed(name)])
+
 describe('desktop package-set selection', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
@@ -36,6 +40,7 @@ describe('desktop package-set selection', () => {
       ['@deepseek-ai/cordis', packed('@deepseek-ai/cordis')],
       ['@deepseek-ai/platform-package', packed('@deepseek-ai/platform-package')],
       ['@deepseek-ai/unused', packed('@deepseek-ai/unused')],
+      ...studioPlugins(),
     ])
     expect(selectDesktopPackageClosure(available).map(entry => entry.manifest.name)).toEqual([
       '@deepseek-ai/cordis',
@@ -43,6 +48,7 @@ describe('desktop package-set selection', () => {
       '@deepseek-ai/dsh-base',
       '@deepseek-ai/dsh-desktop-host',
       '@deepseek-ai/platform-package',
+      ...STUDIO_PLUGINS,
     ])
   })
 
@@ -72,9 +78,10 @@ describe('desktop package-set selection', () => {
         },
       })],
       ['@deepseek-ai/dsh-desktop-host', packed('@deepseek-ai/dsh-desktop-host')],
+      ...studioPlugins(),
     ])
     expect(selectDesktopPackageClosure(available).map(entry => entry.manifest.name)).toEqual([
-      '@deepseek-ai/dsh', '@deepseek-ai/dsh-desktop-host',
+      '@deepseek-ai/dsh', '@deepseek-ai/dsh-desktop-host', ...STUDIO_PLUGINS,
     ])
   })
 
