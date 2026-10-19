@@ -24,6 +24,7 @@ import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import ApprovalService from '@deepseek-ai/dsh-user-approval'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
+import { ChatStore, type TerminalChat } from '@deepseek-ai/dsh-terminal-chat'
 import { internals } from '../src/runner-internals.ts'
 
 const originalInternals = { ...internals }
@@ -58,6 +59,8 @@ interface BenchOptions {
   approvalAnswers?: (string | undefined)[]
   /** Receives the chat's Ctrl-C listener, so a test can press Ctrl-C. */
   onInterrupt?: (listener: () => void) => void
+  /** The full-screen chat the runner opens instead of the line chat. */
+  fullScreen?: TerminalChat
   observe?: () => Promise<ObservationStub>
   /** Leave the query service unmounted to exercise the fail-loud path. */
   omitSessionQuery?: boolean
@@ -223,6 +226,7 @@ async function bench(script: Script, options: BenchOptions = {}): Promise<{
       internals.stdout = { write: (chunk: string) => { out += chunk; return true } }
       internals.stderr = { write: (chunk: string) => { err += chunk; return true } }
       internals.stdoutIsTerminal = () => options.terminal === true
+      internals.openFullScreen = () => Promise.resolve(options.fullScreen)
       if (options.readStdin !== undefined) internals.readStdin = options.readStdin
       if (options.chatLines !== undefined) {
         const lines = options.chatLines
@@ -477,6 +481,67 @@ describe('headless runner', () => {
     expect(result.err).toContain('test-model · 2.0K in / 34 out\n')
     expect(result.err).toMatch(new RegExp(`\\nSession ${agentsSeen[1] ?? ''}; continue it with --session-id`))
     interrupt?.()
+    await test.ctx.fiber.dispose()
+  })
+
+  it('drives the full-screen chat through its store: welcome, messages, tools, answer, status and goodbye', async () => {
+    const store = new ChatStore(() => 0)
+    let closed = 0
+    const fullScreen: TerminalChat = { view: store.view, input: store.input, close: () => { closed++; return Promise.resolve() } }
+    const typed = (text: string): void => {
+      for (const char of text) store.key(char, {})
+      store.key('', { return: true })
+    }
+    const test = await bench({
+      async afterPrompt(session, message, agent) {
+        await Promise.resolve()
+        session.append('turn/start', { turn: 1 })
+        session.append('step/start', { turn: 1, step: 1 })
+        session.append('user/message', message, { surfaceOp: 'append' })
+        startFrames(agent, 1, 1)
+        emitChunk(agent, { type: 'reasoning-delta', index: 0, text: 'checking' })
+        emitChunk(agent, { type: 'text-delta', index: 1, text: 'Looking.' })
+        session.append('assistant/message', {
+          stream: [], turn: 1, step: 1,
+          message: createAssistantMessage({ content: [{ type: 'text', text: 'Looking.' }], source: { provider: 'test-provider', model: 'test-model' } }),
+        }, { surfaceOp: 'append' })
+        session.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('call-1'), name: 'bash', arguments: '{"description":"List files"}' })
+        expect(store.getSnapshot().tools).toEqual([{ id: 'call-1', name: 'bash', summary: 'List files' }])
+        session.append('tool/result', {
+          turn: 1, step: 1,
+          message: createToolResultMessage({ callId: ToolCallId('call-1'), content: [{ type: 'text', text: 'a.txt' }], isError: false }),
+        }, { surfaceOp: 'append' })
+        session.append('step/end', { turn: 1, step: 1 })
+        session.append('step/start', { turn: 1, step: 2 })
+        startFrames(agent, 1, 2)
+        emitChunk(agent, { type: 'text-delta', index: 0, text: 'Found a.txt.' })
+        session.append('assistant/message', {
+          stream: [], turn: 1, step: 2,
+          message: createAssistantMessage({ content: [{ type: 'text', text: 'Found a.txt.' }], source: { provider: 'test-provider', model: 'test-model' } }),
+        }, { surfaceOp: 'append' })
+        session.append('step/end', { turn: 1, step: 2 })
+        session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+        setTimeout(() => { typed('/exit') }, 0)
+      },
+    }, { chatLines: [], fullScreen })
+    const running = test.run()
+    await new Promise((resolve) => { setTimeout(resolve, 0) })
+    typed('list files')
+    const result = await running
+    expect(result.code).toBe(0)
+    expect(result.out).toBe('')
+    const history = store.getSnapshot().history.map(({ id: _id, ...item }) => item)
+    expect(history[0]).toMatchObject({ kind: 'welcome', model: 'test-model' })
+    expect(history.slice(1)).toEqual([
+      { kind: 'message', text: 'list files' },
+      { kind: 'answer', text: 'Looking.' },
+      { kind: 'tool', name: 'bash', summary: 'List files', error: undefined },
+      { kind: 'answer', text: 'Found a.txt.' },
+      { kind: 'message', text: '/exit' },
+      { kind: 'notice', text: expect.stringMatching(/^Session session-[0-9a-f-]+; continue it with --session-id/) },
+    ])
+    expect(store.getSnapshot().status).toBe('test-model')
+    expect(closed).toBe(1)
     await test.ctx.fiber.dispose()
   })
 

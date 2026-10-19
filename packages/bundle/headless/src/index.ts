@@ -39,6 +39,7 @@ import { internals } from './runner-internals.ts'
 import { projectJsonRun, boundJsonLine } from './json-stream.ts'
 import { escapeTerminal, streamChat } from './chat-stream.ts'
 import { chatHelp, statusLine } from './chat-commands.ts'
+import { createLineView } from './chat-line-view.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'headless-runner'
@@ -56,6 +57,8 @@ export interface Config {
   json?: boolean
   /** Harness Studio: run a chat over the interactive terminal instead of one task. */
   chat?: boolean
+  /** Harness Studio: keep the chat to plain lines instead of the full-screen chat. */
+  plain?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -63,6 +66,7 @@ export const Config: z<Config> = z.object({
   sessionId: z.string(),
   json: z.boolean(),
   chat: z.boolean(),
+  plain: z.boolean(),
 })
 
 /** Outcome of one owned run interval. */
@@ -450,7 +454,10 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
   await agent.whenIdle()
   const subagents = ctx.get('subagents')
   const commands = ctx.get('commands')
-  const input = internals.openChat()
+  // The full-screen chat when the terminal allows it and it is installed; plain lines otherwise.
+  const fullScreen = config.plain === true ? undefined : await internals.openFullScreen()
+  const view = fullScreen?.view ?? createLineView(io)
+  const input = fullScreen?.input ?? internals.openChat()
   let replying = false
   let command: AbortController | undefined
   input.onInterrupt(() => {
@@ -463,14 +470,14 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
   const answerApprovals = (owner: Agent): (() => void) => owner.ctx.on('approval/request', async (request, next) => {
     if (request.agent !== owner) return next()
     const reason = request.displayReason?.en ?? request.reason ?? 'it needs your approval'
-    io.stderr.write(`\n! ${escapeTerminal(request.toolName)}: ${escapeTerminal(reason)}\n`)
+    view.notice(`\n! ${escapeTerminal(request.toolName)}: ${escapeTerminal(reason)}`)
     const line = await input.ask('Allow once? [y/N] ', request.signal)
     if (line === undefined && request.signal?.aborted === true) {
-      io.stderr.write('  withdrawn\n')
+      view.notice('  withdrawn')
       return 'cancelled'
     }
     const allowed = line !== undefined && /^(y|yes)$/i.test(line.trim())
-    io.stderr.write(allowed ? '  allowed once\n' : '  rejected\n')
+    view.notice(allowed ? '  allowed once' : '  rejected')
     return allowed ? 'allowed-once' : 'rejected'
   })
   let stopApprovals = answerApprovals(agent)
@@ -494,11 +501,11 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
   const runCommand = async (line: string): Promise<void> => {
     const name = /^\/(\S*)/.exec(line)?.[1] ?? ''
     if (name === '' || name === 'help') {
-      io.stderr.write(chatHelp(commands?.list(agent) ?? []))
+      view.notice(chatHelp(commands?.list(agent) ?? []))
       return
     }
     if (name === 'model') {
-      io.stderr.write(`Model: ${selection.provider}/${selection.model}. The app's default model applies to the next chat.\n`)
+      view.notice(`Model: ${selection.provider}/${selection.model}. The app's default model applies to the next chat.`)
       return
     }
     if (name === 'clear') {
@@ -508,26 +515,30 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
       agent = (await agents.create({ sessionId: brandString<SessionId>(`session-${randomUUID()}`), meta: { cwd }, agentOptions, setup })).agent
       await agent.whenIdle()
       stopApprovals = answerApprovals(agent)
-      io.stderr.write(`New session. Continue the previous one with --session-id ${previous}\n`)
+      view.notice(`New session. Continue the previous one with --session-id ${previous}`)
       return
     }
     if (commands?.find(agent, name) === undefined) {
-      io.stderr.write(`Unknown command /${escapeTerminal(name)}; /help lists the commands. Nothing was sent.\n`)
+      view.notice(`Unknown command /${escapeTerminal(name)}; /help lists the commands. Nothing was sent.`)
       return
     }
     command = new AbortController()
+    let result: string
+    view.replyStart()
     try {
       const execution = await commands.execute(agent, line, [], command.signal)
-      if (execution === undefined) io.stderr.write(`/${name} could not read that input; /help shows how to use it.\n`)
-      else if (execution.result.kind === 'error') io.stderr.write(`/${name}: ${escapeTerminal(execution.result.text)}\n`)
-      else io.stderr.write(`${escapeTerminal(execution.result.text ?? `/${name} done`)}\n`)
+      if (execution === undefined) result = `/${name} could not read that input; /help shows how to use it.`
+      else if (execution.result.kind === 'error') result = `/${name}: ${escapeTerminal(execution.result.text)}`
+      else result = escapeTerminal(execution.result.text ?? `/${name} done`)
     } catch (error) {
-      io.stderr.write(command.signal.aborted ? `/${name} stopped\n` : `/${name} failed: ${escapeTerminal(error instanceof Error ? error.message : String(error))}\n`)
+      result = command.signal.aborted ? `/${name} stopped` : `/${name} failed: ${escapeTerminal(error instanceof Error ? error.message : String(error))}`
     } finally {
       command = undefined
+      view.replyEnd(undefined, undefined)
     }
+    view.notice(result)
   }
-  io.stderr.write(`Chat with ${selection.model} in ${cwd}. Enter sends; /help lists commands; Ctrl-C stops a reply; Ctrl-D or /exit quits.\n`)
+  view.welcome(selection.model, cwd)
   input.prompt()
   for await (const line of input) {
     const text = line.trim()
@@ -543,7 +554,8 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
     }
     const firstSeq = agent.session.seq
     const live = internals.stdoutIsTerminal()
-    const stream = streamChat(ctx, agent, io, { liveText: live })
+    const stream = streamChat(ctx, agent, view, { liveText: live || fullScreen !== undefined })
+    view.replyStart()
     replying = true
     try {
       agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
@@ -558,17 +570,18 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
     }
     await sessions.flush(agent.session)
     const outcome = summarize(agent.session, firstSeq)
-    if (stream.printed()) io.stdout.write('\n')
-    else if (outcome.text !== '') io.stdout.write(`${live ? escapeTerminal(outcome.text) : outcome.text}\n\n`)
-    if (outcome.reason?.kind === 'error') io.stderr.write(`dsh: ${outcome.reason.error.code}: ${outcome.reason.error.message}\n`)
-    else if (outcome.reason?.kind === 'aborted') io.stderr.write('dsh: stopped\n')
-    io.stderr.write(status())
+    const problem = outcome.reason?.kind === 'error'
+      ? `dsh: ${outcome.reason.error.code}: ${outcome.reason.error.message}`
+      : outcome.reason?.kind === 'aborted' ? 'dsh: stopped' : undefined
+    view.replyEnd(stream.printed() ? undefined : live || fullScreen !== undefined ? escapeTerminal(outcome.text) : outcome.text, problem)
+    view.status(status())
     input.prompt()
   }
   stopApprovals()
   input.close()
   await sessions.flush(agent.session)
-  io.stderr.write(`\nSession ${agent.id}; continue it with --session-id ${agent.id}\n`)
+  view.goodbye(agent.id)
+  await fullScreen?.close()
   io.exit(0)
 }
 

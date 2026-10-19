@@ -117,31 +117,36 @@ export const apply = ctx => globalThis.__headlessStartupApply(ctx)
 describe('headless command-line provider', () => {
   it('joins the task positional into the runner config', async () => {
     const { task, observed } = await bootStartup(['run', 'the', 'tests'])
-    expect(task).toEqual({ task: 'run the tests', sessionId: undefined, json: false, chat: false })
+    expect(task).toEqual({ task: 'run the tests', sessionId: undefined, json: false, chat: false, plain: false })
     expect(observed.runnerConfig).toMatchObject({ task: 'run the tests', json: false })
     expect(observed.exits).toEqual([])
   })
 
   it('publishes the machine-readable output mode and the exact Session identity', async () => {
     const { task, observed } = await bootStartup(['--json', '--session-id', 'session-exact', 'do', 'it'])
-    expect(task).toEqual({ task: 'do it', sessionId: 'session-exact', json: true, chat: false })
+    expect(task).toEqual({ task: 'do it', sessionId: 'session-exact', json: true, chat: false, plain: false })
     expect(observed.runnerConfig).toMatchObject({ task: 'do it', sessionId: 'session-exact', json: true })
   })
 
   it('keeps the stdin marker as the task so the runner reads the pipe', async () => {
     const { task } = await bootStartup(['-'], { stdinIsTty: false })
-    expect(task).toEqual({ task: '-', sessionId: undefined, json: false, chat: false })
+    expect(task).toEqual({ task: '-', sessionId: undefined, json: false, chat: false, plain: false })
   })
 
   it('defers an absent task to stdin when stdin is not a terminal', async () => {
     const { task, observed } = await bootStartup([], { stdinIsTty: false })
-    expect(task).toEqual({ task: undefined, sessionId: undefined, json: false, chat: false })
+    expect(task).toEqual({ task: undefined, sessionId: undefined, json: false, chat: false, plain: false })
     expect(observed.runnerConfig).toMatchObject({ json: false })
+  })
+
+  it('keeps the chat to plain lines with --plain', async () => {
+    const { task } = await bootStartup(['--plain'], { stdinIsTty: true })
+    expect(task).toEqual({ task: undefined, sessionId: undefined, json: false, chat: true, plain: true })
   })
 
   it('opens a chat for an interactive invocation with no task', async () => {
     const { task, observed } = await bootStartup([], { stdinIsTty: true })
-    expect(task).toEqual({ task: undefined, sessionId: undefined, json: false, chat: true })
+    expect(task).toEqual({ task: undefined, sessionId: undefined, json: false, chat: true, plain: false })
     expect(observed.runnerConfig).toMatchObject({ chat: true })
     expect(observed.exits).toEqual([])
   })
@@ -163,7 +168,7 @@ describe('headless command-line provider', () => {
 
   it('keeps the caller-provided exact Session identity verbatim', async () => {
     const { task } = await bootStartup(['--session-id', ' session-x ', 'do', 'it'])
-    expect(task).toEqual({ task: 'do it', sessionId: ' session-x ', json: false, chat: false })
+    expect(task).toEqual({ task: 'do it', sessionId: ' session-x ', json: false, chat: false, plain: false })
   })
 
   it('rejects a lone stdin marker mixed with other task words', async () => {
@@ -212,7 +217,7 @@ describe('headless command-line provider', () => {
 
   it('does not install the JSON error override for a --json positional after --', async () => {
     const { task, observed } = await bootStartup(['--', '--json'], { stdinIsTty: false })
-    expect(task).toEqual({ task: '--json', sessionId: undefined, json: false, chat: false })
+    expect(task).toEqual({ task: '--json', sessionId: undefined, json: false, chat: false, plain: false })
     expect(observed.out).not.toContain('"type":"error"')
   })
 

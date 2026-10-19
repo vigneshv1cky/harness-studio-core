@@ -31,6 +31,8 @@ export interface HeadlessStartupValues {
   json: boolean
   /** Harness Studio: whether the invocation opens a chat, given no task at an interactive terminal. */
   chat: boolean
+  /** Harness Studio: keep the chat to plain lines instead of the full-screen chat. */
+  plain: boolean
 }
 
 /**
@@ -44,6 +46,7 @@ function headlessCommand(): Command {
     .helpOption('-h, --help', 'show this help')
     .option('--json', 'write newline-delimited run events to stdout instead of the final message')
     .option('--session-id <id>', 'adopt the persisted Session with this id; an unknown id is an error')
+    .option('--plain', 'chat in plain lines instead of the full-screen chat')
     .argument('[task...]', 'the task text; multiple words are joined by spaces, and `-` reads stdin')
     .addHelpText('after', `
 Examples:
@@ -104,7 +107,7 @@ export function apply(ctx: Context): void {
       program.error('error: a task is required, for example: dsh --profile headless "run the tests"')
     }
     const task = program.args.length === 0 ? undefined : joined
-    const options = program.opts<{ json?: boolean; sessionId?: string }>()
+    const options = program.opts<{ json?: boolean; sessionId?: string; plain?: boolean }>()
     // No task at an interactive terminal opens a chat; the event stream has no chat form.
     const chat = task === undefined && internals.stdinIsTty()
     if (chat && options.json === true) {
@@ -121,6 +124,7 @@ export function apply(ctx: Context): void {
       sessionId,
       json: options.json === true,
       chat,
+      plain: options.plain === true,
     } satisfies HeadlessStartupValues)
   })
   parseCmdline(ctx, program)

@@ -29,6 +29,7 @@
         sessionId: !!js ctx.headlessStartup.sessionId
         json: !!js ctx.headlessStartup.json
         chat: !!js ctx.headlessStartup.chat
+        plain: !!js ctx.headlessStartup.plain
 
 - id: hmr
   disabled: true

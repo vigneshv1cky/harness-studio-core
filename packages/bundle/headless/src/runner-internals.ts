@@ -6,6 +6,7 @@
  */
 
 import { createInterface } from 'node:readline'
+import type { TerminalChat } from '@deepseek-ai/dsh-terminal-chat'
 
 /** Lines typed at an interactive terminal, for the chat mode. */
 export interface ChatInput extends AsyncIterable<string> {
@@ -110,10 +111,25 @@ export const internals: {
   openChat: () => ChatInput
   /** Whether stdout is a terminal, so printed model text must be escaped and the chat may stream its answer. */
   stdoutIsTerminal: () => boolean
+  /** Start the full-screen chat, or undefined when the terminal cannot show it or it is not installed. */
+  openFullScreen: () => Promise<TerminalChat | undefined>
 } = {
   stdout: process.stdout,
   stderr: process.stderr,
   stdoutIsTerminal: () => process.stdout.isTTY === true,
+  openFullScreen: async () => {
+    if (process.stdout.isTTY !== true || process.stdin.isTTY !== true || process.env['TERM'] === 'dumb') return undefined
+    let module: typeof import('@deepseek-ai/dsh-terminal-chat')
+    try {
+      module = await import('@deepseek-ai/dsh-terminal-chat')
+    } catch (error) {
+      // Not installed with this runner: the line chat takes over.
+      void error
+      return undefined
+    }
+    if (process.stdout.columns < module.MIN_COLUMNS) return undefined
+    return module.startTerminalChat()
+  },
   readStdin: async () => {
     const chunks: Buffer[] = []
     for await (const chunk of process.stdin as AsyncIterable<Buffer>) chunks.push(chunk)

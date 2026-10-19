@@ -1,8 +1,8 @@
 /**
- * Harness Studio: the terminal chat's live output. The answer streams to stdout as the model writes it, reasoning
- * streams to stderr, and each tool call and each result take one stderr line. Text from the model or a tool passes
- * through {@link escapeTerminal} before it is printed, so it cannot drive the terminal: clear the screen, set the
- * window title, write the clipboard or draw a fake prompt.
+ * Harness Studio: the terminal chat's live stream. Reasoning, answer text, tool calls and their results are reported
+ * to a view (the line chat's or the full-screen chat's) as they happen. Text from the model or a tool passes through
+ * {@link escapeTerminal} first, so it cannot drive the terminal: clear the screen, set the window title, write the
+ * clipboard or draw a fake prompt.
  *
  * Streamed text cannot be taken back. When the model request for a step is retried after some of its text was
  * printed, a `(retrying)` line separates the two attempts; the durable Session log stays the authority.
@@ -13,6 +13,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
+import type { ChatView } from '@deepseek-ai/dsh-terminal-chat'
 
 /** C0 controls other than tab and newline, DEL, and C1 controls. */
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
@@ -56,98 +57,66 @@ export function toolSummary(raw: string): string {
   return ''
 }
 
-/** Where the chat prints. */
-export interface ChatSinks {
-  stdout: { write(chunk: string): unknown }
-  stderr: { write(chunk: string): unknown }
-}
-
-/** One reply's live output. */
+/** One reply's live stream. */
 export interface ChatStream {
-  /** Whether any answer text was printed while streaming. */
+  /** Whether any answer text was streamed. */
   printed(): boolean
-  /** Stop listening and end any unfinished line. */
+  /** Stop listening. */
   dispose(): void
 }
 
 /**
- * Print one reply as it happens.
+ * Report one reply to a view as it happens. Model and tool text is escaped here, once, for every view.
  * @param ctx - plugin context carrying the live Assistant frames and Session events.
  * @param agent - the chat's Agent; other Agents' output is ignored.
- * @param sinks - stdout for the answer, stderr for reasoning and tool lines.
- * @param options - `liveText` streams the answer; without it only reasoning and tool lines are live, and the caller
- *   prints the answer when the turn ends (stdout is not a terminal).
+ * @param view - the line chat's or the full-screen chat's view.
+ * @param options - `liveText` streams the answer; without it the caller passes the answer when the turn ends
+ *   (stdout is not a terminal).
  * @returns the stream's handle.
  */
-export function streamChat(ctx: Context, agent: Agent, sinks: ChatSinks, options: { liveText: boolean }): ChatStream {
-  let reasoningOpen = false
-  let reasoningEndsLine = true
-  let answerEndsLine = true
+export function streamChat(ctx: Context, agent: Agent, view: ChatView, options: { liveText: boolean }): ChatStream {
   let printedAny = false
-  // The step the current model attempt belongs to, and whether that attempt has printed answer text.
+  // The step the current model attempt belongs to, and whether that attempt has shown answer text.
   let attemptStep = ''
   let attemptPrinted = false
   const toolNames = new Map<string, string>()
 
-  const closeReasoning = (): void => {
-    if (!reasoningOpen) return
-    if (!reasoningEndsLine) sinks.stderr.write('\n')
-    reasoningOpen = false
-    reasoningEndsLine = true
-  }
-  const endAnswerLine = (): void => {
-    if (answerEndsLine) return
-    sinks.stdout.write('\n')
-    answerEndsLine = true
-  }
-
   const stopFrames = ctx.on('agent/assistant-stream', ({ agent: subject, frame }) => {
     if (subject !== agent) return
     if (frame.type === 'start') {
-      closeReasoning()
-      endAnswerLine()
       const step = `${String(frame.turn)}:${String(frame.step)}`
-      if (attemptPrinted && step === attemptStep) sinks.stderr.write('(retrying)\n')
+      view.attemptStart(attemptPrinted && step === attemptStep)
       attemptStep = step
       attemptPrinted = false
       return
     }
     if (frame.type === 'end') {
-      closeReasoning()
-      endAnswerLine()
+      view.attemptEnd()
       return
     }
     const chunk = frame.chunk
     switch (chunk.type) {
       case 'reasoning-delta':
-        if (chunk.text === '') return
-        if (!reasoningOpen) {
-          endAnswerLine()
-          sinks.stderr.write('dsh: reasoning:\n')
-          reasoningOpen = true
-        }
-        sinks.stderr.write(escapeTerminal(chunk.text))
-        reasoningEndsLine = chunk.text.endsWith('\n')
+        if (chunk.text !== '') view.reasoning(escapeTerminal(chunk.text))
         return
       case 'text-delta':
-        closeReasoning()
+        view.blockEnd()
         if (!options.liveText || chunk.text === '') return
-        sinks.stdout.write(escapeTerminal(chunk.text))
-        answerEndsLine = chunk.text.endsWith('\n')
+        view.answer(escapeTerminal(chunk.text))
         printedAny = true
         attemptPrinted = true
         return
       case 'block-start':
-        if (chunk.blockType !== 'reasoning') closeReasoning()
+        if (chunk.blockType !== 'reasoning') view.blockEnd()
         return
       case 'block-end':
-        if (chunk.block.type !== 'reasoning') closeReasoning()
+        if (chunk.block.type !== 'reasoning') view.blockEnd()
         return
       case 'usage':
         return
       case 'tool-call-delta':
       case 'finish':
-        closeReasoning()
+        view.blockEnd()
         return
       /* v8 ignore next -- closed-union exhaustiveness guard */
       default:
@@ -158,18 +127,15 @@ export function streamChat(ctx: Context, agent: Agent, sinks: ChatSinks, options
   const stopEvents = ctx.on('session/event', (session: unknown, event: SessionEvent) => {
     if (session !== agent.session) return
     if (event.type === 'tool/call') {
-      closeReasoning()
-      endAnswerLine()
       toolNames.set(event.data.callId, event.data.name)
-      const summary = toolSummary(event.data.arguments)
-      sinks.stderr.write(`• ${escapeTerminal(event.data.name)}${summary === '' ? '' : ` ${escapeTerminal(summary)}`}\n`)
+      view.toolCall(event.data.callId, escapeTerminal(event.data.name), escapeTerminal(toolSummary(event.data.arguments)))
       return
     }
     if (event.type === 'tool/result' && event.surfaceOp === 'append') {
       const message = event.data.message
       const name = escapeTerminal(toolNames.get(message.toolCallId) ?? 'tool')
       if (message.isError !== true) {
-        sinks.stderr.write(`  ✓ ${name}\n`)
+        view.toolResult(message.toolCallId, name, undefined)
         return
       }
       const first = message.content
@@ -178,7 +144,7 @@ export function streamChat(ctx: Context, agent: Agent, sinks: ChatSinks, options
         .split('\n')
         .map(line => line.trim())
         .find(line => line !== '') ?? 'failed'
-      sinks.stderr.write(`  ✗ ${name}: ${escapeTerminal(oneLine(first))}\n`)
+      view.toolResult(message.toolCallId, name, escapeTerminal(oneLine(first)))
     }
   })
 
@@ -187,8 +153,6 @@ export function streamChat(ctx: Context, agent: Agent, sinks: ChatSinks, options
     dispose(): void {
       stopFrames()
       stopEvents()
-      closeReasoning()
-      endAnswerLine()
     },
   }
 }

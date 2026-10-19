@@ -54,6 +54,9 @@
       "path": "../../llm/token-meter"
     },
     {
+      "path": "../../ui/terminal-chat"
+    },
+    {
       "path": "../../subagent/subagent"
     }
   ]
