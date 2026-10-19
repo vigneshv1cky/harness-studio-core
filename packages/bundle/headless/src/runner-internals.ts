@@ -6,25 +6,10 @@
  */
 
 import { createInterface } from 'node:readline'
-import type { TerminalChat } from '@deepseek-ai/dsh-terminal-chat'
+import type { ChatInput, TerminalChat } from '@deepseek-ai/dsh-terminal-chat'
 
-/** Lines typed at an interactive terminal, for the chat mode. */
-export interface ChatInput extends AsyncIterable<string> {
-  /** Show the prompt for the next line. */
-  prompt(): void
-  /** Run `listener` on Ctrl-C instead of ending the process. */
-  onInterrupt(listener: () => void): void
-  /** Stop reading; the iteration then ends. */
-  close(): void
-  /**
-   * Ask one question and read the answer. Only a line entered after the question appeared answers it: lines entered
-   * earlier stay queued as messages, and text half-typed when it appears is cleared.
-   * @param question - the prompt shown on the input line.
-   * @param signal - withdraws the question.
-   * @returns the line, or undefined when the question was withdrawn or input ended.
-   */
-  ask(question: string, signal?: AbortSignal): Promise<string | undefined>
-}
+/** Lines typed at an interactive terminal, for the chat mode: the shared chat input face. */
+export type { ChatInput }
 
 /** The parts of a readline interface the chat input uses; tests substitute a fake. */
 export interface ChatLineSource {

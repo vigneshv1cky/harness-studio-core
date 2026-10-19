@@ -545,6 +545,56 @@ describe('headless runner', () => {
     await test.ctx.fiber.dispose()
   })
 
+  it('asks approvals in the full-screen chat\'s choice box and gives its slash menu the commands', async () => {
+    const store = new ChatStore(() => 0)
+    const fullScreen: TerminalChat = { view: store.view, input: store.input, close: () => Promise.resolve() }
+    const outcomes: string[] = []
+    const answerNext = (keys: Parameters<ChatStore['key']>[1][]): void => {
+      const timer = setInterval(() => {
+        if (store.getSnapshot().choice === undefined) return
+        clearInterval(timer)
+        for (const key of keys) store.key('', key)
+      }, 1)
+    }
+    const test = await bench({
+      async afterPrompt(session, message, agent) {
+        await Promise.resolve()
+        session.append('turn/start', { turn: 1 })
+        session.append('step/start', { turn: 1, step: 1 })
+        session.append('user/message', message, { surfaceOp: 'append' })
+        answerNext([{ downArrow: true }, { return: true }])
+        outcomes.push(await test.ctx.approval.request({ agent, toolName: 'bash', displayReason: { en: 'Write \u001b[2J outside' } }))
+        expect(store.getSnapshot().history.at(-1)).toMatchObject({ kind: 'notice', text: 'bash needs your approval: Yes, once' })
+        answerNext([{ escape: true }])
+        outcomes.push(await test.ctx.approval.request({ agent, toolName: 'bash', reason: 'again' }))
+        const controller = new AbortController()
+        const pending = test.ctx.approval.request({ agent, toolName: 'bash', signal: controller.signal })
+        await Promise.resolve()
+        controller.abort()
+        outcomes.push(await pending)
+        session.append('step/end', { turn: 1, step: 1 })
+        session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+        setTimeout(() => {
+          for (const char of '/exit') store.key(char, {})
+          store.key('', { return: true })
+        }, 0)
+      },
+    }, { chatLines: [], fullScreen })
+    await test.ctx.plugin(ApprovalService)
+    await test.ctx.plugin(CommandRuntime)
+    test.ctx.commands.register({ name: 'compact', description: 'Compact older history', handler: () => ({ kind: 'success' }) })
+    const running = test.run()
+    await new Promise((resolve) => { setTimeout(resolve, 0) })
+    expect(store.getSnapshot().commands.map(command => command.name)).toEqual(['help', 'clear', 'model', 'exit', 'compact'])
+    for (const char of 'go') store.key(char, {})
+    store.key('', { return: true })
+    const result = await running
+    expect(outcomes).toEqual(['allowed-once', 'rejected', 'cancelled'])
+    expect(store.getSnapshot().history.some(item => item.kind === 'notice' && item.text === '  withdrawn')).toBe(true)
+    expect(result.err).toBe('')
+    await test.ctx.fiber.dispose()
+  })
+
   it('marks a retried step whose first attempt already printed text', async () => {
     const test = await bench({
       async afterPrompt(session, message, agent) {

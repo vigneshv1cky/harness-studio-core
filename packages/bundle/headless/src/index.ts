@@ -38,7 +38,7 @@ import type {} from '@deepseek-ai/dsh-token-meter'
 import { internals } from './runner-internals.ts'
 import { projectJsonRun, boundJsonLine } from './json-stream.ts'
 import { escapeTerminal, streamChat } from './chat-stream.ts'
-import { chatHelp, statusLine } from './chat-commands.ts'
+import { chatCommandList, chatHelp, statusLine } from './chat-commands.ts'
 import { createLineView } from './chat-line-view.ts'
 
 /** Stable Cordis plugin name. */
@@ -469,8 +469,24 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
   // the "never" policy rejects before any answerer is asked, so neither reaches this prompt.
   const answerApprovals = (owner: Agent): (() => void) => owner.ctx.on('approval/request', async (request, next) => {
     if (request.agent !== owner) return next()
-    const reason = request.displayReason?.en ?? request.reason ?? 'it needs your approval'
-    view.notice(`\n! ${escapeTerminal(request.toolName)}: ${escapeTerminal(reason)}`)
+    const tool = escapeTerminal(request.toolName)
+    const reason = escapeTerminal(request.displayReason?.en ?? request.reason ?? 'it needs your approval')
+    if (input.choose !== undefined) {
+      // The full-screen chat: a box chosen with the arrow keys, No selected, Esc says no. It echoes the choice.
+      const value = await input.choose({
+        title: `${tool} needs your approval`,
+        detail: reason,
+        options: [{ label: 'Yes, once', value: 'yes' }, { label: 'No', value: 'no' }],
+        initial: 1,
+        escape: 'no',
+      }, request.signal)
+      if (value === undefined && request.signal?.aborted === true) {
+        view.notice('  withdrawn')
+        return 'cancelled'
+      }
+      return value === 'yes' ? 'allowed-once' : 'rejected'
+    }
+    view.notice(`\n! ${tool}: ${reason}`)
     const line = await input.ask('Allow once? [y/N] ', request.signal)
     if (line === undefined && request.signal?.aborted === true) {
       view.notice('  withdrawn')
@@ -515,6 +531,7 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
       agent = (await agents.create({ sessionId: brandString<SessionId>(`session-${randomUUID()}`), meta: { cwd }, agentOptions, setup })).agent
       await agent.whenIdle()
       stopApprovals = answerApprovals(agent)
+      view.commands(chatCommandList(commands?.list(agent) ?? []))
       view.notice(`New session. Continue the previous one with --session-id ${previous}`)
       return
     }
@@ -539,6 +556,7 @@ async function chat(ctx: Context, config: Config, io: HeadlessIo): Promise<void>
     view.notice(result)
   }
   view.welcome(selection.model, cwd)
+  view.commands(chatCommandList(commands?.list(agent) ?? []))
   input.prompt()
   for await (const line of input) {
     const text = line.trim()

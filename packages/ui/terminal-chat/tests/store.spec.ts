@@ -1,7 +1,7 @@
 /** The full-screen chat's state: what lands in the scrollback, the input queue and questions, and the keys. */
 
 import { describe, expect, it } from 'vitest'
-import { ChatStore, QUIT_WINDOW_MS } from '../src/store.ts'
+import { ChatStore, MENU_SIZE, QUIT_WINDOW_MS, menuFor } from '../src/store.ts'
 
 const items = (store: ChatStore) => store.getSnapshot().history.map(({ id: _id, ...item }) => item)
 const type = (store: ChatStore, text: string): void => {
@@ -169,6 +169,91 @@ describe('full-screen chat store', () => {
     store.key('d', { ctrl: true })
     expect(store.getSnapshot().closed).toBe(true)
     expect(await store.input[Symbol.asyncIterator]().next()).toEqual({ value: undefined, done: true })
+  })
+
+  it('a choice box is answered by arrows and Enter, a number, or Esc; it echoes the choice and can be withdrawn', async () => {
+    const store = new ChatStore()
+    const choice = { title: 'bash needs your approval', detail: 'outside the workspace', options: [{ label: 'Yes, once', value: 'yes' }, { label: 'No', value: 'no' }], initial: 1, escape: 'no' }
+    type(store, 'typed before')
+    const first = store.input.choose?.(choice)
+    expect(store.getSnapshot().choice?.selected).toBe(1)
+    store.key('', { downArrow: true })
+    expect(store.getSnapshot().choice?.selected).toBe(0)
+    store.key('', { upArrow: true })
+    store.key('', { upArrow: true })
+    store.key('x', {})
+    store.key('', { return: true })
+    expect(await first).toBe('yes')
+    expect(store.getSnapshot().choice).toBeUndefined()
+    expect(store.getSnapshot().draft).toBe('typed before')
+    const second = store.input.choose?.(choice)
+    store.key('2', {})
+    expect(await second).toBe('no')
+    const third = store.input.choose?.(choice)
+    store.key('', { escape: true })
+    expect(await third).toBe('no')
+    expect(items(store).filter(item => item.kind === 'notice').map(item => item.kind === 'notice' ? item.text : '')).toEqual([
+      'bash needs your approval: Yes, once', 'bash needs your approval: No', 'bash needs your approval: No',
+    ])
+    const controller = new AbortController()
+    const withdrawn = store.input.choose?.(choice, controller.signal)
+    controller.abort()
+    expect(await withdrawn).toBeUndefined()
+    expect(await store.input.choose?.(choice, controller.signal)).toBeUndefined()
+    let interrupts = 0
+    store.input.onInterrupt(() => { interrupts++ })
+    store.view.replyStart()
+    const open = store.input.choose?.(choice)
+    store.key('c', { ctrl: true })
+    expect(interrupts).toBe(1)
+    store.input.close()
+    expect(await open).toBeUndefined()
+    expect(await store.input.choose?.(choice)).toBeUndefined()
+  })
+
+  it('the slash menu filters commands by what follows /, moves with arrows, completes with Tab and runs with Enter', async () => {
+    const store = new ChatStore()
+    store.view.commands([
+      { name: 'help', description: 'List' }, { name: 'clear', description: 'New session' },
+      { name: 'compact', description: 'Compact' }, { name: 'plan', description: 'Plan', input: { hint: '[off|message]' } },
+    ])
+    type(store, '/c')
+    expect(menuFor(store.getSnapshot()).map(entry => entry.name)).toEqual(['clear', 'compact'])
+    store.key('', { downArrow: true })
+    expect(store.getSnapshot().menuIndex).toBe(1)
+    store.key('', { downArrow: true })
+    expect(store.getSnapshot().menuIndex).toBe(0)
+    store.key('', { upArrow: true })
+    store.key('', { return: true })
+    const lines = store.input[Symbol.asyncIterator]()
+    expect(await lines.next()).toEqual({ value: '/compact', done: false })
+    type(store, '/pl')
+    store.key('', { tab: true })
+    expect(store.getSnapshot().draft).toBe('/plan ')
+    expect(menuFor(store.getSnapshot())).toEqual([])
+    store.key('', { backspace: true })
+    store.key('', { backspace: true })
+    expect(menuFor(store.getSnapshot()).map(entry => entry.name)).toEqual(['plan'])
+    // Ctrl-C clears the box between attempts.
+    store.key('c', { ctrl: true })
+    type(store, '/he')
+    store.key('', { tab: true })
+    expect(store.getSnapshot().draft).toBe('/help')
+    store.key('c', { ctrl: true })
+    type(store, '/zz')
+    expect(menuFor(store.getSnapshot())).toEqual([])
+    store.key('', { tab: true })
+    expect(store.getSnapshot().draft).toBe('/zz')
+    store.view.commands(Array.from({ length: 12 }, (_, index) => ({ name: `c${String(index)}`, description: '' })))
+    store.key('', { backspace: true })
+    store.key('', { backspace: true })
+    expect(menuFor(store.getSnapshot())).toHaveLength(MENU_SIZE)
+    store.key('x', {})
+    store.key('', { return: true })
+    expect(await lines.next()).toEqual({ value: '/x', done: false })
+    void store.input.ask('Allow?')
+    type(store, '/')
+    expect(menuFor(store.getSnapshot())).toEqual([])
   })
 
   it('stops notifying a listener once unsubscribed', () => {

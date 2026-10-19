@@ -4,7 +4,7 @@
  * @module @deepseek-ai/dsh-terminal-chat/store
  */
 
-import type { ChatInput, ChatView } from './contract.ts'
+import type { ChatChoice, ChatCommand, ChatInput, ChatView } from './contract.ts'
 
 /** One finished item, printed once into the terminal's scrollback. */
 export type HistoryItem =
@@ -41,6 +41,12 @@ export interface ChatState {
   readonly draft: string
   /** A short hint under the input box, such as the second-Ctrl-C reminder. */
   readonly hint: string | undefined
+  /** The open choice box and its selected option; it takes the input box's place. */
+  readonly choice: (ChatChoice & { readonly selected: number }) | undefined
+  /** The commands the slash menu offers. */
+  readonly commands: readonly ChatCommand[]
+  /** The selected entry of the slash menu. */
+  readonly menuIndex: number
   readonly closed: boolean
 }
 
@@ -48,7 +54,22 @@ export interface ChatState {
 export const QUIT_WINDOW_MS = 2000
 
 const INITIAL: ChatState = {
-  history: [], reasoning: '', answer: '', tools: [], busySince: undefined, status: '', question: undefined, draft: '', hint: undefined, closed: false,
+  history: [], reasoning: '', answer: '', tools: [], busySince: undefined, status: '', question: undefined, draft: '', hint: undefined,
+  choice: undefined, commands: [], menuIndex: 0, closed: false,
+}
+
+/** The most entries the slash menu shows. */
+export const MENU_SIZE = 8
+
+/**
+ * The slash menu's entries: commands whose name starts with what follows a `/` typed alone in the box.
+ * @param state - the chat state.
+ * @returns matching commands; empty when no menu shows.
+ */
+export function menuFor(state: ChatState): readonly ChatCommand[] {
+  if (state.question !== undefined || state.choice !== undefined || !/^\/\S*$/.test(state.draft)) return []
+  const typed = state.draft.slice(1)
+  return state.commands.filter(command => command.name.startsWith(typed)).slice(0, MENU_SIZE)
 }
 
 /** The keys the input box reacts to, as Ink reports them. */
@@ -72,6 +93,7 @@ export class ChatStore {
   private readonly queued: string[] = []
   private wake: (() => void) | undefined
   private answerQuestion: ((line: string | undefined) => void) | undefined
+  private answerChoice: ((value: string | undefined) => void) | undefined
   private readonly interruptListeners: (() => void)[] = []
   private readonly sent: string[] = []
   private recall = 0
@@ -153,6 +175,7 @@ export class ChatStore {
       this.set({ history: this.push({ kind: 'notice', text: text.replace(/\n+$/, '') }) })
     },
     status: (line) => { this.set({ status: line.replace(/\n+$/, '') }) },
+    commands: (entries) => { this.set({ commands: entries, menuIndex: 0 }) },
     goodbye: (sessionId) => { this.set({ history: this.push({ kind: 'notice', text: `Session ${sessionId}; continue it with --session-id ${sessionId}` }) }) },
   }
 
@@ -180,6 +203,23 @@ export class ChatStore {
         signal?.addEventListener('abort', withdraw, { once: true })
       })
     },
+    choose: (choice, signal) => {
+      if (this.state.closed || signal?.aborted === true) return Promise.resolve(undefined)
+      this.set({ choice: { ...choice, selected: choice.initial } })
+      return new Promise((resolve) => {
+        const finish = (value: string | undefined): void => {
+          signal?.removeEventListener('abort', withdraw)
+          this.set({ choice: undefined })
+          resolve(value)
+        }
+        const withdraw = (): void => {
+          if (this.answerChoice === finish) this.answerChoice = undefined
+          finish(undefined)
+        }
+        this.answerChoice = finish
+        signal?.addEventListener('abort', withdraw, { once: true })
+      })
+    },
   }
 
   private async* lines(): AsyncGenerator<string> {
@@ -202,11 +242,63 @@ export class ChatStore {
     const settle = this.answerQuestion
     this.answerQuestion = undefined
     settle?.(undefined)
+    const choose = this.answerChoice
+    this.answerChoice = undefined
+    choose?.(undefined)
     this.wake?.()
   }
 
   private interrupt(): void {
     for (const listener of this.interruptListeners) listener()
+  }
+
+  /** Answer the open choice with one option, echoing it into the scrollback. */
+  private pick(value: string): void {
+    const choice = this.state.choice
+    const settle = this.answerChoice
+    if (choice === undefined || settle === undefined) return
+    this.answerChoice = undefined
+    const label = choice.options.find(option => option.value === value)?.label ?? value
+    this.set({ history: this.push({ kind: 'notice', text: `${choice.title}: ${label}` }) })
+    settle(value)
+  }
+
+  /** Keys while a choice box is open: arrows move, a number or Enter chooses, Esc answers with its escape value. */
+  private chooseKey(input: string, key: KeyPress): void {
+    const choice = this.state.choice
+    if (choice === undefined) return
+    const count = choice.options.length
+    if (key.upArrow === true || key.downArrow === true) {
+      this.set({ choice: { ...choice, selected: (choice.selected + (key.upArrow === true ? count - 1 : 1)) % count } })
+      return
+    }
+    if (key.escape === true) {
+      this.pick(choice.escape)
+      return
+    }
+    const number = /^[1-9]$/.test(input) ? Number(input) - 1 : -1
+    const option = key.return === true ? choice.options[choice.selected] : choice.options[number]
+    if (option !== undefined) this.pick(option.value)
+  }
+
+  /** Keys while the slash menu shows: arrows move, Tab completes, Enter runs the selected command. */
+  private menuKey(key: KeyPress, menu: readonly ChatCommand[]): boolean {
+    const selected = menu[Math.min(this.state.menuIndex, menu.length - 1)]
+    if (selected === undefined) return false
+    if (key.upArrow === true || key.downArrow === true) {
+      this.set({ menuIndex: (this.state.menuIndex + (key.upArrow === true ? menu.length - 1 : 1)) % menu.length })
+      return true
+    }
+    if (key.tab === true) {
+      this.set({ draft: `/${selected.name}${selected.input === undefined ? '' : ' '}`, menuIndex: 0 })
+      return true
+    }
+    if (key.return === true) {
+      this.set({ draft: `/${selected.name}`, menuIndex: 0 })
+      this.submit()
+      return true
+    }
+    return false
   }
 
   /** Enter: answer the open question, or send the line. */
@@ -249,6 +341,12 @@ export class ChatStore {
     }
     if (this.state.hint !== undefined) this.set({ hint: undefined })
     this.quitArmedAt = undefined
+    if (this.state.choice !== undefined) {
+      this.chooseKey(input, key)
+      return
+    }
+    const menu = menuFor(this.state)
+    if (menu.length > 0 && this.menuKey(key, menu)) return
     if (key.ctrl === true && input === 'd') {
       if (this.state.draft === '') this.close()
       return
@@ -263,7 +361,7 @@ export class ChatStore {
       return
     }
     if (key.backspace === true || key.delete === true) {
-      this.set({ draft: this.state.draft.slice(0, -1) })
+      this.set({ draft: this.state.draft.slice(0, -1), menuIndex: 0 })
       return
     }
     if (key.upArrow === true || key.downArrow === true) {
@@ -280,6 +378,6 @@ export class ChatStore {
       return
     }
     // A pasted chunk arrives at once; its line breaks stay in the message instead of sending it.
-    this.set({ draft: this.state.draft + input.replace(/\r\n?/g, '\n') })
+    this.set({ draft: this.state.draft + input.replace(/\r\n?/g, '\n'), menuIndex: 0 })
   }
 }

@@ -89,6 +89,9 @@ export function createLineView(sinks: LineSinks): ChatView {
     status(line) {
       sinks.stderr.write(line.endsWith('\n') ? line : `${line}\n`)
     },
+    commands() {
+      // The line chat lists commands with /help.
+    },
     goodbye(sessionId) {
       sinks.stderr.write(`\nSession ${sessionId}; continue it with --session-id ${sessionId}\n`)
     },

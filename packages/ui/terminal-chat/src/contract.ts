@@ -20,6 +20,32 @@ export interface ChatInput extends AsyncIterable<string> {
    * @returns the answer, or undefined when the question was withdrawn or input ended.
    */
   ask(question: string, signal?: AbortSignal): Promise<string | undefined>
+  /**
+   * Offer a choice in a box chosen with the arrow keys and Enter, where the input can draw one (the full-screen
+   * chat); a chat loop without it asks with {@link ask}. Only keys pressed after the box appears choose.
+   * @param choice - the title, a detail line, the options and which one starts selected.
+   * @param signal - withdraws the choice.
+   * @returns the chosen option's value, or undefined when the choice was withdrawn or input ended.
+   */
+  choose?(choice: ChatChoice, signal?: AbortSignal): Promise<string | undefined>
+}
+
+/** A choice offered in a box. */
+export interface ChatChoice {
+  readonly title: string
+  readonly detail?: string | undefined
+  readonly options: readonly { readonly label: string; readonly value: string }[]
+  /** The option selected when the box appears; Esc answers with the value of {@link escape}. */
+  readonly initial: number
+  /** The value Esc answers with. */
+  readonly escape: string
+}
+
+/** One command the chat accepts, for the slash menu. */
+export interface ChatCommand {
+  readonly name: string
+  readonly description: string
+  readonly input?: { readonly hint: string } | undefined
 }
 
 /**
@@ -54,6 +80,8 @@ export interface ChatView {
   notice(text: string): void
   /** The status after a reply: model, tokens, context use and permission mode. */
   status(line: string): void
+  /** The commands the chat accepts now, for a slash menu (the line chat lists them with /help instead). */
+  commands(entries: readonly ChatCommand[]): void
   /** The chat closed; `sessionId` continues it with --session-id. */
   goodbye(sessionId: string): void
 }

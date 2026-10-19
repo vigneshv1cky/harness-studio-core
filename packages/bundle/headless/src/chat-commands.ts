@@ -24,11 +24,20 @@ export const CHAT_COMMANDS: readonly ChatCommandEntry[] = [
  * @returns lines ready to print, ending with a newline.
  */
 export function chatHelp(registered: readonly ChatCommandEntry[]): string {
-  const own = new Set(CHAT_COMMANDS.map(command => command.name))
-  const rows = [...CHAT_COMMANDS, ...registered.filter(command => !own.has(command.name))]
+  const rows = chatCommandList(registered)
     .map(command => ({ usage: `/${command.name}${command.input === undefined ? '' : ` ${command.input.hint}`}`, description: command.description }))
   const width = Math.max(...rows.map(row => row.usage.length))
   return `${rows.map(row => `  ${row.usage.padEnd(width)}  ${row.description}`).join('\n')}\n`
+}
+
+/**
+ * Every command the chat accepts: its own first, then Harness's registered ones it does not shadow.
+ * @param registered - descriptors from Harness's command registry for the chat's agent.
+ * @returns the merged list.
+ */
+export function chatCommandList(registered: readonly ChatCommandEntry[]): readonly ChatCommandEntry[] {
+  const own = new Set(CHAT_COMMANDS.map(command => command.name))
+  return [...CHAT_COMMANDS, ...registered.filter(command => !own.has(command.name))]
 }
 
 /**

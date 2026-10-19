@@ -6,8 +6,9 @@
  */
 
 import { createElement as h, Fragment, useEffect, useState, useSyncExternalStore, type ReactElement } from 'react'
-import { Box, Static, Text, useInput } from 'ink'
-import type { ChatState, ChatStore, HistoryItem } from './store.ts'
+import { Box, Static, Text, useStdin } from 'ink'
+import { splitKeys } from './keys.ts'
+import { menuFor, type ChatState, type ChatStore, type HistoryItem } from './store.ts'
 
 /** The spinner's frames, drawn about ten times a second while a reply runs. */
 export const SPINNER = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢']
@@ -31,7 +32,7 @@ function Item({ item }: { item: HistoryItem }): ReactElement {
       return h(Box, { borderStyle: 'round', borderColor: 'cyan', paddingX: 1, flexDirection: 'column' },
         h(Text, null, h(Text, { color: 'cyan' }, '✻ '), h(Text, { bold: true }, 'Harness Studio')),
         h(Text, { dimColor: true }, `${item.model} · ${item.cwd}`),
-        h(Text, { dimColor: true }, '/help for commands · Esc stops a reply · Ctrl-C twice quits'))
+        h(Text, { dimColor: true }, '/ for commands · Esc stops a reply · Ctrl-C twice quits'))
     case 'message':
       return h(Box, { marginTop: 1 }, h(Text, { dimColor: true }, '> '), h(Text, null, item.text))
     case 'answer':
@@ -73,23 +74,68 @@ function Live({ state }: { state: ChatState }): ReactElement {
     state.busySince === undefined ? null : h(Spinner, { since: state.busySince, reasoning: state.reasoning }))
 }
 
+function ChoiceBox({ choice }: { choice: NonNullable<ChatState['choice']> }): ReactElement {
+  return h(Box, { flexDirection: 'column', marginTop: 1 },
+    h(Box, { borderStyle: 'round', borderColor: 'yellow', paddingX: 1, flexDirection: 'column' },
+      h(Text, { bold: true }, choice.title),
+      choice.detail === undefined ? null : h(Text, { dimColor: true }, choice.detail),
+      h(Box, { flexDirection: 'column', marginTop: 1 },
+        ...choice.options.map((option, index) => h(Text, { key: option.value, ...index === choice.selected ? { color: 'cyan' } : {} },
+          `${index === choice.selected ? '❯' : ' '} ${String(index + 1)}. ${option.label}`)))),
+    h(Box, { paddingX: 2 }, h(Text, { dimColor: true }, '↑↓ to choose · Enter to confirm · Esc to say no')))
+}
+
+function Menu({ entries, selected }: { entries: ReturnType<typeof menuFor>; selected: number }): ReactElement {
+  // The name column fits the names; a command's input hint shows only beside the selected entry.
+  const width = Math.max(...entries.map(entry => entry.name.length)) + 1
+  const active = Math.min(selected, entries.length - 1)
+  return h(Box, { flexDirection: 'column', paddingX: 2 },
+    ...entries.map((entry, index) => {
+      const label = `/${entry.name}${index === active && entry.input !== undefined ? ` ${entry.input.hint}` : ''}`
+      return h(Text, { key: entry.name, wrap: 'truncate-end' },
+        h(Text, index === active ? { color: 'cyan' } : {}, `${index === active ? '❯ ' : '  '}${label.padEnd(width + 1)}`),
+        h(Text, { dimColor: true }, ` ${entry.description}`))
+    }))
+}
+
 function Input({ state }: { state: ChatState }): ReactElement {
+  if (state.choice !== undefined) return h(ChoiceBox, { choice: state.choice })
   const lines = state.draft.split('\n')
+  const menu = menuFor(state)
   return h(Box, { flexDirection: 'column', marginTop: 1 },
     state.question === undefined ? null : h(Text, { color: 'yellow' }, state.question),
     h(Box, { borderStyle: 'round', borderColor: state.question === undefined ? 'gray' : 'yellow', paddingX: 1, flexDirection: 'column' },
       ...lines.map((line, index) => h(Text, { key: String(index) },
         h(Text, { dimColor: true }, index === 0 ? '> ' : '  '), line,
         index === lines.length - 1 ? h(Text, { inverse: true }, ' ') : ''))),
-    h(Box, { paddingX: 2, justifyContent: 'space-between' },
+    menu.length > 0 ? h(Menu, { entries: menu, selected: state.menuIndex }) : h(Box, { paddingX: 2, justifyContent: 'space-between' },
       h(Text, { dimColor: true }, state.hint ?? state.status),
-      h(Text, { dimColor: true }, state.question === undefined ? '/help for commands' : '')))
+      h(Text, { dimColor: true }, state.question === undefined ? '/ for commands' : '')))
+}
+
+/**
+ * Read keys from Ink's raw input, split into one press per key: Ink's own `useInput` treats each chunk as one key,
+ * so keys arriving together would be lost.
+ */
+function useKeys(store: ChatStore): void {
+  const { setRawMode, internal_eventEmitter: input } = useStdin()
+  useEffect(() => {
+    setRawMode(true)
+    return () => { setRawMode(false) }
+  }, [setRawMode])
+  useEffect(() => {
+    const onData = (data: string): void => {
+      for (const [text, key] of splitKeys(data)) store.key(text, key)
+    }
+    input.on('input', onData)
+    return () => { input.removeListener('input', onData) }
+  }, [input, store])
 }
 
 /** The whole chat screen over one store. */
 export function TerminalChatApp({ store }: { store: ChatStore }): ReactElement {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot)
-  useInput((input, key) => { store.key(input, key) })
+  useKeys(store)
   return h(Fragment, null,
     h(Static<HistoryItem>, { items: [...state.history], children: (item: HistoryItem) => h(Item, { key: item.id, item }) }),
     state.closed ? null : h(Live, { state }),

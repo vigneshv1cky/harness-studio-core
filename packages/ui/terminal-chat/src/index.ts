@@ -11,8 +11,8 @@ import { TerminalChatApp } from './app.ts'
 import { ChatStore } from './store.ts'
 import type { ChatInput, ChatView } from './contract.ts'
 
-export type { ChatInput, ChatView } from './contract.ts'
-export { ChatStore, QUIT_WINDOW_MS, type ChatState, type HistoryItem, type KeyPress, type RunningTool } from './store.ts'
+export type { ChatChoice, ChatCommand, ChatInput, ChatView } from './contract.ts'
+export { ChatStore, MENU_SIZE, QUIT_WINDOW_MS, menuFor, type ChatState, type HistoryItem, type KeyPress, type RunningTool } from './store.ts'
 export { TerminalChatApp, elapsed, lastLine, SPINNER } from './app.ts'
 
 /** The smallest terminal width the full-screen chat is drawn in; narrower terminals get the line chat. */
