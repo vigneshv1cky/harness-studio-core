@@ -144,6 +144,42 @@ describe('Agent.cancel()', () => {
     expect(endings).toEqual([{ kind: 'aborted', reason: { kind: 'user' } }, { kind: 'completed' }])
   })
 
+  // A JavaScript plugin once passed a sentence as the cause: the turn aborted,
+  // `turn/end` was logged with `reason: null`, and the chat failed reading `kind`.
+  it.each<[string, unknown]>([
+    ['a sentence', 'You stopped computer use'],
+    ['null', null],
+    ['an unknown kind', { kind: 'computer-use' }],
+    ['a hook cause without its reason', { kind: 'hook' }],
+  ])('rejects %s as the cause and leaves the running turn to record its own ending', async (_label, cause) => {
+    const adapter = new MockAdapter([textResponse('finished')])
+    const ctx = await harness(adapter)
+    try {
+      const agent = await ctx.agentLoop.create(SessionId('cancel-malformed-cause'), { provider: 'mock', model: 'mock' })
+      const errors: unknown[] = []
+      ctx.on('agent/request', ({ turn }, next) => {
+        if (turn === 1) {
+          try {
+            agent.cancel(cause as AgentCancelCause)
+          } catch (error: unknown) {
+            errors.push(error)
+          }
+        }
+        return next()
+      })
+
+      send(agent, 'keep running')
+      await agent.whenIdle()
+
+      expect(errors).toEqual([expect.any(TypeError)])
+      expect(agent.session.snapshotEvents()
+        .flatMap(event => event.type === 'turn/end' ? [event.data.reason] : []))
+        .toEqual([{ kind: 'completed' }])
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('cancel() on an idle agent with nothing queued is a no-op; the next prompt runs (F2 leak guard)', async () => {
     const adapter = new MockAdapter([textResponse('reply')])
     const ctx = await harness(adapter)

@@ -94,6 +94,18 @@ function abortedCancelCause(signal: AbortSignal): AgentCancelCause | undefined {
   }
 }
 
+/**
+ * Whether a value is one of the closed {@link AgentCancelCause} variants.
+ * @param value - the cause a caller handed to `cancel()`.
+ * @returns true for a cause `abortedCancelCause` can record.
+ */
+function isAgentCancelCause(value: unknown): value is AgentCancelCause {
+  if (typeof value !== 'object' || value === null) return false
+  const { kind } = value as { kind?: unknown }
+  if (kind === 'hook') return typeof (value as { reason?: unknown }).reason === 'string'
+  return kind === 'user' || kind === 'parent' || kind === 'disposed'
+}
+
 /** Drives one session through turn and step boundaries. */
 export class ReactLoopAgent implements Agent {
   readonly inbox: ReactLoopInbox
@@ -173,6 +185,12 @@ export class ReactLoopAgent implements Agent {
   }
 
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
+    // Untyped callers (JavaScript plugins) can pass anything; a cause outside the
+    // union would abort the turn and then fail `abortedCancelCause`, leaving
+    // `turn/end` without a reason that every reader dereferences.
+    if (!isAgentCancelCause(cause)) {
+      throw new TypeError(`agent "${this.id}": cancel() needs an AgentCancelCause such as { kind: 'user' }`)
+    }
     if (!options.keepInbox) {
       this.inbox.clear()
       if (this.phase.kind !== 'idle') this.phase.wakeRequested = false
