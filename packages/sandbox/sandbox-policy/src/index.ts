@@ -20,12 +20,13 @@
  * @module @deepseek-ai/dsh-sandbox-policy
  */
 
+import { readFileSync, statSync } from 'node:fs'
 import { isAbsolute } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { z as zod } from 'zod'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent'
-import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
+import type { SandboxExecutionPolicy, SandboxMode, SandboxNetwork } from '@deepseek-ai/dsh-sandbox'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-system-prompt'
@@ -55,8 +56,68 @@ export interface SandboxCeiling {
 /** Reports the ceiling for one session, or `undefined` when it sets none. Called at every resolve, so it must be cheap and synchronous. */
 export type SandboxCeilingSource = (session: Session) => SandboxCeiling | undefined
 
+/** The network modes, in the order a setting offers them. */
+export const NETWORK_MODES = ['on', 'off', 'allowlist'] as const
+
+/** Host entries the allowlist accepts: a DNS name or IP address, optionally `*.` for subdomains. */
+const HOST_ENTRY = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/
+
+/**
+ * Normalize allowlist entries: lower case, scheme, path and port dropped, invalid and repeated entries
+ * removed.
+ * @param hosts - entries as a person typed them, such as `https://Registry.npmjs.org/`.
+ * @returns the entries the proxy compares against.
+ */
+export function normalizeHosts(hosts: readonly unknown[]): string[] {
+  const out: string[] = []
+  for (const raw of hosts) {
+    if (typeof raw !== 'string') continue
+    const host = raw.trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/[/?#].*$/, '').replace(/:\d+$/, '')
+    if (HOST_ENTRY.test(host) && !out.includes(host)) out.push(host)
+  }
+  return out
+}
+
+/**
+ * What a limited network policy does not stop, per platform, in the words the model is told. Loopback stays
+ * reachable for local dev servers and databases, so programs on this computer that forward traffic remain a
+ * way out, and system services act outside the sandbox altogether.
+ */
+export const NETWORK_LEAKS: Readonly<Record<'darwin' | 'linux' | 'other', string>> = {
+  darwin: 'This is not a complete barrier: programs on this computer that forward traffic, such as local proxies and SSH tunnels listening on its loopback interface, can still be reached, and system services (opening a URL with open, launchd jobs) can make requests outside the sandbox.',
+  linux: 'This is not a complete barrier: programs on this computer reachable through a Unix socket, such as a local proxy or SSH tunnel listening on one, the Docker socket, or D-Bus (and systemd-run through it), can still make requests outside the sandbox.',
+  other: 'This is not a complete barrier: programs on this computer that forward traffic, such as local proxies and SSH tunnels, can still be reached, and system services can make requests outside the sandbox.',
+}
+
+/**
+ * Sentences on the network policy, or '' when it is `on`. `escalatable` is false while a ceiling holds
+ * the session, since an escalation cannot widen it then.
+ */
+function renderNetworkContext(network: SandboxNetwork | undefined, escalatable: boolean): string {
+  const retry = escalatable ? ' A command that needs more network access can be retried once with sandbox_permissions danger-full-access, which the user must approve.' : ''
+  const leaks = ` ${NETWORK_LEAKS[process.platform === 'darwin' || process.platform === 'linux' ? process.platform : 'other']} Do not use them to get around this setting.`
+  switch (network?.mode) {
+    case undefined:
+    case 'on':
+      return ''
+    case 'off':
+      return ` Network for commands: off. Direct connections to other computers are blocked, so downloads, package installs and git fetches normally fail.${leaks}${retry}`
+    case 'allowlist':
+      return ` Network for commands: only ${network.hosts.length === 0 ? 'no hosts' : network.hosts.join(', ')}, through a proxy set in HTTP_PROXY and HTTPS_PROXY; other hosts are refused with HTTP 403, and direct connections are blocked, so programs that ignore those variables cannot connect directly.${leaks}${retry}`
+    /* v8 ignore next 4 -- SandboxNetwork is a typed same-process closed union; this branch is only the static exhaustiveness guard. */
+    default: {
+      const mode: never = network
+      throw new Error(`unreachable network mode: ${String(mode)}`)
+    }
+  }
+}
+
 /** Render the policy without claiming which capabilities are mounted. */
 function renderPolicyContext(policy: SandboxExecutionPolicy, ceiling?: SandboxCeiling): string {
+  return renderFileContext(policy, ceiling) + (policy.mode === 'danger-full-access' ? '' : renderNetworkContext(policy.network, ceiling === undefined))
+}
+
+function renderFileContext(policy: SandboxExecutionPolicy, ceiling?: SandboxCeiling): string {
   if (ceiling !== undefined) {
     return `Current DSH file policy: ${policy.mode} because ${ceiling.reason}. Operations enforced by the DSH file sandbox cannot widen past ${policy.mode} until that changes, and a sandbox escalation cannot lift it, so do not request one.`
   }
@@ -96,6 +157,16 @@ export interface Config {
    * `process.cwd()`). Normal agent calls use their session cwd instead.
    */
   workspaceRoot?: string
+  /** Network for confined commands (default: `on`). */
+  network?: SandboxNetwork['mode']
+  /** Hosts `allowlist` admits; see {@link SandboxNetwork} (default: none). */
+  allowedHosts?: string[]
+  /**
+   * Absolute path of a JSON file `{ "network": "on" | "off" | "allowlist", "allowedHosts": [...] }` whose
+   * fields, when present and valid, replace `network` and `allowedHosts`. It is re-read when it changes, so a
+   * settings page can change the policy without a restart. Absent: only the configured values apply.
+   */
+  networkFile?: string
 }
 
 /** Inputs that select the sandbox policy for one capability call. */
@@ -134,6 +205,9 @@ export class SandboxPolicyService extends Service {
     // No schema default: process.cwd() is resolved in the constructor so the
     // stored root is always absolute regardless of how it was supplied.
     workspaceRoot: z.string(),
+    network: z.union(['on', 'off', 'allowlist'] as const).default('on'),
+    allowedHosts: z.array(z.string()).default([]),
+    networkFile: z.string(),
   })
 
   static inject = ['sessionProjections']
@@ -142,6 +216,11 @@ export class SandboxPolicyService extends Service {
   readonly defaultMode: SandboxMode
   /** The absolute `workspace-write` fallback root for calls without a session cwd. */
   readonly workspaceRoot: string
+  /** The configured network policy, beneath the saved file's. */
+  private readonly configuredNetwork: SandboxNetwork
+  private readonly networkFile: string | undefined
+  /** The saved file's last read, keyed by its modification time and size. */
+  private savedNetwork: { stamp: string, network: SandboxNetwork | undefined } | undefined
   constructor(ctx: Context, config: Config) {
     super(ctx, 'sandboxPolicy')
     // schemastery (static Config) already filled `mode`; the cast records that
@@ -149,6 +228,9 @@ export class SandboxPolicyService extends Service {
     // the process cwd is real branching, resolved absolute either way.
     this.defaultMode = config.mode as SandboxMode
     this.workspaceRoot = resolveWorkspaceRoot(config.workspaceRoot ?? process.cwd())
+    this.configuredNetwork = networkOf(config.network ?? 'on', config.allowedHosts ?? [])
+    if (config.networkFile !== undefined && !isAbsolute(config.networkFile)) throw new Error('sandbox-policy: networkFile must be an absolute path')
+    this.networkFile = config.networkFile
 
     ctx.sessionProjections.register({
       key: 'sandboxMode',
@@ -230,11 +312,43 @@ export class SandboxPolicyService extends Service {
     const { session } = request
     const uncapped = this.uncappedMode(request)
     const ceiling = session === undefined ? undefined : this.ceilingOf(session)
+    const network = this.network()
     return {
       mode: ceiling !== undefined && MODE_WIDTH[ceiling.mode] < MODE_WIDTH[uncapped] ? ceiling.mode : uncapped,
       workspaceRoot: resolveWorkspaceRoot(session?.header.cwd ?? this.workspaceRoot),
       ...session === undefined ? {} : { sessionId: session.id },
+      // Absent means `on`, so the common case resolves exactly as before network policy existed.
+      ...network.mode === 'on' ? {} : { network },
     }
+  }
+
+  /**
+   * The network policy in force: the saved file's when it holds a valid one, else the configured one.
+   * @returns the network policy for confined commands.
+   */
+  network(): SandboxNetwork {
+    if (this.networkFile === undefined) return this.configuredNetwork
+    let stamp: string
+    try {
+      const info = statSync(this.networkFile)
+      stamp = `${info.mtimeMs}:${info.size}`
+    } catch {
+      // No saved choice yet: the configured policy applies.
+      return this.configuredNetwork
+    }
+    if (this.savedNetwork?.stamp !== stamp) {
+      let network: SandboxNetwork | undefined
+      try {
+        const saved = JSON.parse(readFileSync(this.networkFile, 'utf8')) as { network?: unknown, allowedHosts?: unknown }
+        const mode = NETWORK_MODES.find(m => m === saved.network)
+        if (mode !== undefined) network = networkOf(mode, Array.isArray(saved.allowedHosts) ? saved.allowedHosts : [])
+        else this.ctx.logger.warn('sandbox-policy: %s has no valid "network"; using the configured network policy', this.networkFile)
+      } catch (error) {
+        this.ctx.logger.warn('sandbox-policy: cannot read %s (%s); using the configured network policy', this.networkFile, error instanceof Error ? error.message : String(error))
+      }
+      this.savedNetwork = { stamp, network }
+    }
+    return this.savedNetwork.network ?? this.configuredNetwork
   }
 
   /**
@@ -245,6 +359,11 @@ export class SandboxPolicyService extends Service {
   overrideOf(session: Session): SandboxMode | undefined {
     return this.ctx.sessionProjections.stateOf(session, 'sandboxMode') ?? undefined
   }
+}
+
+/** Build the network policy for a mode and its host entries. */
+function networkOf(mode: SandboxNetwork['mode'], hosts: readonly unknown[]): SandboxNetwork {
+  return mode === 'allowlist' ? { mode, hosts: normalizeHosts(hosts) } : { mode }
 }
 
 export default SandboxPolicyService

@@ -22,9 +22,10 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { randomBytes } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   LAUNCHER_BIN,
@@ -34,12 +35,18 @@ import {
 } from '@deepseek-ai/node-addon-system/landlock-run'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { SandboxProvider, SandboxUnavailableError, canonicalPath } from '@deepseek-ai/dsh-sandbox'
+import { SandboxNetworkUnavailableError, SandboxProvider, SandboxUnavailableError, canonicalPath } from '@deepseek-ai/dsh-sandbox'
 import type { ConfinedArgv, ConfinedSandboxMode, RunnerFailureRule, SandboxEnforcement, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { AclWriteGrant, assertTempRootOutsideWorkspace, registerAclDiagnosisSkill, tempWriteSid, workspaceWriteSid } from '@deepseek-ai/dsh-sandbox-windows-acl'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
-import { bwrapProfileArgs, landlockProfileArgs, seatbeltProfileArgs } from './profiles.ts'
+import { BRIDGE_SOURCE, proxyEnvironment, startNetworkProxy, type NetworkProxy } from './network-proxy.ts'
+import { bwrapProfileArgs, landlockProfileArgs, limitsNetwork, seatbeltProfileArgs } from './profiles.ts'
+
+export { hostAllowed } from './network-proxy.ts'
+
+/** The loopback port the Linux bridge listens on inside each command's own network namespace. */
+const BRIDGE_PORT = 3128
 
 /** Plugin config. All optional — `static Config` supplies the defaults. */
 export interface Config {
@@ -274,6 +281,8 @@ export class LocalSandboxProvider extends SandboxProvider {
    */
   private readonly workspaceGrants = new Map<string, AclWriteGrant>()
   private readonly tempCapabilities = new Map<string, AclTempCapability>()
+  /** Running `allowlist` proxies, one per listening kind and host list. */
+  private readonly proxies = new Map<string, Promise<NetworkProxy>>()
 
   constructor(ctx: Context, config: Config) {
     super(ctx)
@@ -308,6 +317,90 @@ export class LocalSandboxProvider extends SandboxProvider {
     ctx.effect(() => () => {
       this.revokeAclGrants()
     })
+    ctx.effect(() => () => {
+      const running = [...this.proxies.values()]
+      this.proxies.clear()
+      for (const proxy of running) {
+        void proxy.then(p => p.close()).catch(() => undefined)
+      }
+    }, 'sandbox-local: close network proxies')
+  }
+
+  /** The map key of the proxy for one listening kind and host list. */
+  private static proxyKey(hosts: readonly string[], kind: 'tcp' | 'unix'): string {
+    return `${kind}\n${hosts.join(',')}`
+  }
+
+  /**
+   * Close every running proxy except the one `keep` names (none when undefined). Called on each confined
+   * call with the proxy the current policy needs, so a host list the person has since changed or switched
+   * off stops admitting connections at once instead of lingering until shutdown.
+   */
+  private closeProxiesExcept(keep: string | undefined): void {
+    for (const [key, proxy] of this.proxies) {
+      if (key === keep) continue
+      this.proxies.delete(key)
+      void proxy.then(p => p.close()).catch(() => undefined)
+    }
+  }
+
+  /** Start, or reuse, the proxy for one host list, on loopback TCP or on a Unix socket. */
+  private proxyFor(hosts: readonly string[], kind: 'tcp' | 'unix'): Promise<NetworkProxy> {
+    const key = LocalSandboxProvider.proxyKey(hosts, kind)
+    this.closeProxiesExcept(key)
+    let proxy = this.proxies.get(key)
+    if (proxy === undefined) {
+      let listen: { port: 0 } | { socketPath: string } = { port: 0 }
+      if (kind === 'unix') {
+        // Outside /tmp, which bwrap replaces with an empty tmpfs under workspace-write. A random name, so a
+        // new proxy never collides with one still closing.
+        const dir = process.env.XDG_RUNTIME_DIR ?? join(homedir(), '.cache')
+        mkdirSync(dir, { recursive: true })
+        const socketPath = join(dir, `dsh-net-${randomBytes(8).toString('hex')}.sock`)
+        rmSync(socketPath, { force: true })
+        listen = { socketPath }
+      }
+      const started = startNetworkProxy(hosts, listen)
+      proxy = started
+      started.catch(() => { if (this.proxies.get(key) === started) this.proxies.delete(key) })
+      this.proxies.set(key, started)
+    }
+    return proxy
+  }
+
+  /**
+   * Extra bwrap mounts the `allowlist` bridge needs: the running executable is the bridge's interpreter, and
+   * when it lies under /tmp (an AppImage mounts itself at /tmp/.mount_*), workspace-write's empty /tmp would
+   * hide it, so its directory (the whole AppImage mount when there is one) is bound back read-only.
+   */
+  private static bridgeMounts(policy: SandboxPolicy): string[] {
+    if (policy.network?.mode !== 'allowlist' || policy.mode !== 'workspace-write') return []
+    let executable = process.execPath
+    try {
+      executable = realpathSync(executable)
+    } catch {
+      // Keep the path as given.
+    }
+    const appDir = process.env.APPDIR
+    const dir = appDir !== undefined && appDir !== '' && executable.startsWith(appDir.endsWith(sep) ? appDir : appDir + sep) ? appDir : dirname(executable)
+    return dir === '/tmp' || dir.startsWith('/tmp/') ? ['--ro-bind', dir, dir] : []
+  }
+
+  /**
+   * The command argv with the network policy applied inside the runner: unchanged unless the policy is
+   * `allowlist`, which points the command at the proxy (and, under bwrap, runs it under the bridge).
+   */
+  private async networkArgv(argv: readonly string[], policy: SandboxPolicy, runner: 'bwrap' | 'seatbelt'): Promise<readonly string[]> {
+    const network = policy.network
+    if (network?.mode !== 'allowlist') return argv
+    if (runner === 'seatbelt') {
+      const proxy = await this.proxyFor(network.hosts, 'tcp')
+      if (!('port' in proxy.address)) throw new Error('sandbox-local: expected a loopback proxy')
+      return ['/usr/bin/env', ...proxyEnvironment(proxy.address.port), ...argv]
+    }
+    const proxy = await this.proxyFor(network.hosts, 'unix')
+    if (!('socketPath' in proxy.address)) throw new Error('sandbox-local: expected a Unix-socket proxy')
+    return ['/usr/bin/env', 'ELECTRON_RUN_AS_NODE=1', ...proxyEnvironment(BRIDGE_PORT), process.execPath, '-e', BRIDGE_SOURCE, proxy.address.socketPath, String(BRIDGE_PORT), ...argv]
   }
 
   /**
@@ -325,18 +418,31 @@ export class LocalSandboxProvider extends SandboxProvider {
   async confine(argv: readonly string[], policy: SandboxPolicy, signal?: AbortSignal): Promise<ConfinedArgv> {
     signal?.throwIfAborted()
     policy = { ...policy, workspaceRoot: canonicalPath(policy.workspaceRoot) }
+    // Only `allowlist` needs a proxy; any other policy closes the ones a previous policy started.
+    if (policy.network?.mode !== 'allowlist') this.closeProxiesExcept(undefined)
     if (this.runnerCommand !== undefined) {
-      return Promise.resolve<ConfinedArgv>({
-        argv: [...this.runnerCommand, ...bwrapProfileArgs(policy), '--', ...argv],
+      return {
+        argv: [...this.runnerCommand, ...bwrapProfileArgs(policy), ...LocalSandboxProvider.bridgeMounts(policy), '--', ...await this.networkArgv(argv, policy, 'bwrap')],
         enforcement: 'full',
         denialSignatures: DENIAL_SIGNATURES.runnerCommand,
         runnerFailureRules: [{ fatalSignatures: this.configuredRunnerFailureSignatures }],
-      })
+      }
     }
     const selected = this.selectRunner(policy.mode)
+    let commandArgv = argv
+    if (limitsNetwork(policy)) {
+      const runner = selected.runner
+      if (runner !== 'bwrap' && runner !== 'seatbelt') {
+        throw new SandboxNetworkUnavailableError(policy.network?.mode ?? 'off', runner === 'landlock'
+          ? 'Install bubblewrap (the bwrap command), which can give each command a network of its own; Landlock alone cannot.'
+          : 'The Windows sandbox cannot limit network access.')
+      }
+      commandArgv = await this.networkArgv(argv, policy, runner)
+    }
     const runnerArgv = this.runnerArgv(selected.runner, policy)
+    if (selected.runner === 'bwrap') runnerArgv.push(...LocalSandboxProvider.bridgeMounts(policy))
     return Promise.resolve<ConfinedArgv>({
-      argv: [...runnerArgv, '--', ...argv],
+      argv: [...runnerArgv, '--', ...commandArgv],
       enforcement: selected.enforcement,
       denialSignatures: DENIAL_SIGNATURES[selected.runner],
       runnerFailureRules: RUNNER_FAILURE_RULES[selected.runner],

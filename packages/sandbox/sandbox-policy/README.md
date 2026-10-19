@@ -46,6 +46,9 @@ Load the package with a default mode; the fail-safe default is `read-only`, and 
 |---|---|---|
 | `mode` | `read-only` | The deployment default mode a session starts from, validated at load |
 | `workspaceRoot` | `process.cwd()` | Absolute fallback root for agentless calls or sessions without a cwd; relative values fail at load. Normal agent calls use the session's immutable cwd |
+| `network` | `on` | Network for confined commands: `on`, `off` or `allowlist` (see `SandboxNetwork` in `@deepseek-ai/dsh-sandbox`) |
+| `allowedHosts` | `[]` | Hosts `allowlist` admits; entries are lower-cased, stripped of scheme, path and port, and invalid ones dropped. `*.example.com` admits subdomains |
+| `networkFile` | none | Absolute path of a JSON file `{ "network": …, "allowedHosts": [...] }` that replaces the two fields above when it holds a valid `network`; re-read when it changes, so a settings page can switch the policy without a restart |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-sandbox-policy) is the exhaustive source for every accepted field and its JSDoc.
 
@@ -140,6 +143,16 @@ When a ceiling narrows the mode, the text names the reason instead:
 Current DSH file policy: read-only because plan mode is on, and file changes wait until the user approves the plan. Operations enforced by the DSH file sandbox cannot widen past read-only until that changes, and a sandbox escalation cannot lift it, so do not request one.
 ```
 
+##### Network limits
+
+When `network` is `off` or `allowlist` and the mode is not `danger-full-access`, a few sentences follow the file policy, for example on macOS:
+
+```markdown
+Network for commands: off. Direct connections to other computers are blocked, so downloads, package installs and git fetches normally fail. This is not a complete barrier: programs on this computer that forward traffic, such as local proxies and SSH tunnels listening on its loopback interface, can still be reached, and system services (opening a URL with open, launchd jobs) can make requests outside the sandbox. Do not use them to get around this setting. A command that needs more network access can be retried once with sandbox_permissions danger-full-access, which the user must approve.
+```
+
+Under `allowlist` it names the hosts and the proxy variables instead. The middle sentence depends on the platform (`NETWORK_LEAKS`): on Linux it names Unix sockets, a local proxy or tunnel listening on one, the Docker socket, and D-Bus with systemd-run. The retry sentence is left out while a ceiling holds the session.
+
 #### Token effect
 
 One concise durable context message on the first request and each effective policy change; unchanged requests add nothing. `workspace-write` carries only the recorded session workspace path; platform-specific temporary paths are summarized without adding host-dependent bytes.
@@ -156,7 +169,9 @@ The stable system prompt remains byte-identical across mode changes. A changed f
 These limits define the policy surface this package provides. They are current package constraints, not a general sandbox comparison or a task backlog.
 
 - **One primary workspace root per session** — policy resolves `SessionHeader.cwd`; extra writable roots are not part of `SandboxExecutionPolicy`.
-- **File-effect modes only** — `SandboxMode` governs file effects; network and process policy are outside its vocabulary, so no knob here restricts them.
+- **Network limits are not a complete barrier** — loopback stays reachable so local dev servers and databases keep working, so a local proxy or SSH tunnel (Clash on `127.0.0.1:7890`, `ssh -D`, a corporate proxy) still carries traffic out on macOS, and Unix sockets (the Docker socket, D-Bus and `systemd-run`, a proxy listening on one) do on Linux; macOS `open URL` and launchd also act outside the sandbox. The model is told so rather than told that commands cannot connect.
+- **Network policy is per deployment, not per session** — `network` and `networkFile` apply to every session; there is no per-session network override or escalation narrower than `danger-full-access`.
+- **Process policy is outside the vocabulary** — no knob here restricts which processes a command may see or signal beyond what the backend does.
 - **Temporary areas are deliberately summarized** — enforcing backends grant different platform temporary areas, which are selected after policy resolution and therefore cannot be enumerated truthfully in the current context.
 
 Policy-context replacements must be counter-tested on denied-then-escalatable tasks to verify that the model still attempts the initial tool call. The [historical five-of-twelve zero-tool-call measurement](../../../.agents/notes/archived/feature/2026-07-06-sandbox.md) records the failure this check prevents.

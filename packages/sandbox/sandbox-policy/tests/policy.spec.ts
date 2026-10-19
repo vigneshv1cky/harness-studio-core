@@ -4,14 +4,15 @@
  * override kit (fold + write path) every enforcing capability reads.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SESSION_FORMAT_VERSION, Session, SessionId } from '@deepseek-ai/dsh-session'
-import SandboxPolicyService, { SANDBOX_MODES, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
+import SandboxPolicyService, { SANDBOX_MODES, normalizeHosts, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
+import { NETWORK_LEAKS } from '@deepseek-ai/dsh-sandbox-policy'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt, { renderContextSnapshot, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 
@@ -297,6 +298,76 @@ describe('ceilings', () => {
     const ctx = await promptMounted('read-only')
     ctx.sandboxPolicy.limit(() => ({ mode: 'read-only', reason: 'plan mode is on' }))
     expect(await policyContext(ctx, session('sess-same', '/projects/a'))).toMatch(/^Current DSH file policy: read-only\. Any available operation/)
+  })
+})
+
+describe('network policy', () => {
+  async function withNetwork(config: Record<string, unknown>): Promise<Context> {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(SessionProjectionRegistry)
+    await ctx.plugin(SandboxPolicyService, { mode: 'workspace-write', workspaceRoot: '/fallback', ...config })
+    return ctx
+  }
+
+  it('leaves network out of the resolved policy when it is on (the default)', async () => {
+    const ctx = await withNetwork({})
+    expect(ctx.sandboxPolicy.resolve()).toEqual({ mode: 'workspace-write', workspaceRoot: '/fallback' })
+    expect(await policyContext(ctx, session('sess-net-on', '/p'))).not.toContain('Network')
+  })
+
+  it('resolves off and allowlist, normalizing host entries', async () => {
+    expect((await withNetwork({ network: 'off' })).sandboxPolicy.resolve().network).toEqual({ mode: 'off' })
+    const ctx = await withNetwork({ network: 'allowlist', allowedHosts: ['https://Registry.npmjs.org/', '*.GitHub.com', 'pypi.org:443', 'not a host', 'pypi.org'] })
+    expect(ctx.sandboxPolicy.resolve().network).toEqual({ mode: 'allowlist', hosts: ['registry.npmjs.org', '*.github.com', 'pypi.org'] })
+    expect(normalizeHosts(['', 7, 'a..b', '-x.com', 'ok.io'])).toEqual(['ok.io'])
+  })
+
+  it('tells the model what the network policy allows, and drops the escalation hint while a ceiling holds', async () => {
+    const off = await withNetwork({ network: 'off' })
+    const target = session('sess-net-off', '/p')
+    const leaks = NETWORK_LEAKS[process.platform === 'darwin' || process.platform === 'linux' ? process.platform : 'other']
+    expect(await policyContext(off, target)).toContain(`Network for commands: off. Direct connections to other computers are blocked, so downloads, package installs and git fetches normally fail. ${leaks} Do not use them to get around this setting. A command that needs more network access can be retried once with sandbox_permissions danger-full-access, which the user must approve.`)
+    // Honest about what stays reachable: it never claims commands cannot connect at all.
+    expect(await policyContext(off, target)).not.toContain('cannot connect to other computers')
+    expect(NETWORK_LEAKS.darwin).toMatch(/local proxies and SSH tunnels .* can still be reached/)
+    expect(NETWORK_LEAKS.darwin).toContain('open')
+    expect(NETWORK_LEAKS.linux).toMatch(/Docker socket.*D-Bus.*systemd-run/)
+    off.sandboxPolicy.limit(() => ({ mode: 'read-only', reason: 'plan mode is on' }))
+    const held = await policyContext(off, target)
+    expect(held).toContain('Network for commands: off.')
+    expect(held).not.toContain('retried once')
+    const list = await withNetwork({ network: 'allowlist', allowedHosts: ['pypi.org'] })
+    expect(await policyContext(list, session('sess-net-list', '/p'))).toContain(`Network for commands: only pypi.org, through a proxy set in HTTP_PROXY and HTTPS_PROXY; other hosts are refused with HTTP 403, and direct connections are blocked, so programs that ignore those variables cannot connect directly. ${leaks}`)
+    setSandboxMode(target, 'danger-full-access')
+    const full = await withNetwork({ network: 'off' })
+    expect(await policyContext(full, target)).not.toContain('Network')
+  })
+
+  it('reads the saved choice from networkFile, follows its changes, and falls back when it is missing or invalid', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-net-'))
+    try {
+      const file = join(dir, 'network.json')
+      const ctx = await withNetwork({ network: 'off', networkFile: file })
+      expect(ctx.sandboxPolicy.network()).toEqual({ mode: 'off' })
+      writeFileSync(file, JSON.stringify({ network: 'allowlist', allowedHosts: ['github.com'] }))
+      expect(ctx.sandboxPolicy.network()).toEqual({ mode: 'allowlist', hosts: ['github.com'] })
+      writeFileSync(file, JSON.stringify({ network: 'on', note: 'changed size' }))
+      expect(ctx.sandboxPolicy.network()).toEqual({ mode: 'on' })
+      writeFileSync(file, '{ not json')
+      expect(ctx.sandboxPolicy.network()).toEqual({ mode: 'off' })
+      writeFileSync(file, JSON.stringify({ network: 'sideways' }))
+      expect(ctx.sandboxPolicy.network()).toEqual({ mode: 'off' })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a relative networkFile at load', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionProjectionRegistry)
+    await expect(ctx.plugin(SandboxPolicyService, { networkFile: 'network.json' })).rejects.toThrow('networkFile must be an absolute path')
+    await ctx.fiber.dispose()
   })
 })
 

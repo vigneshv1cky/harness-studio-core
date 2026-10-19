@@ -19,7 +19,19 @@ export function bwrapProfileArgs(policy: SandboxPolicy): string[] {
     args.push('--tmpfs', '/tmp')
     args.push('--bind', policy.workspaceRoot, policy.workspaceRoot)
   }
+  // A network namespace of its own, with only loopback: no route to other hosts. Under `allowlist` the
+  // proxy's Unix socket, outside /tmp and visible through the read-only root, is the only way out.
+  if (limitsNetwork(policy)) args.push('--unshare-net')
   return args
+}
+
+/**
+ * Whether a policy asks the backend to limit network access.
+ * @param policy - the policy for one execution.
+ * @returns true for `off` and `allowlist`.
+ */
+export function limitsNetwork(policy: SandboxPolicy): boolean {
+  return policy.network !== undefined && policy.network.mode !== 'on'
 }
 
 /**
@@ -53,6 +65,11 @@ export function seatbeltProfileArgs(policy: SandboxPolicy): string[] {
   const roots = writableRoots(policy)
   if (roots.length > 0) {
     forms.push(`(allow file-write* ${roots.map(root => `(subpath ${sbplString(root)})`).join(' ')})`)
+  }
+  // No connections to other hosts; the loopback interface stays open, which is how `allowlist` reaches its
+  // proxy and how tests reach a local server. Unix-domain sockets (name resolution among them) are untouched.
+  if (limitsNetwork(policy)) {
+    forms.push('(deny network-outbound (remote ip "*:*"))', '(allow network-outbound (remote ip "localhost:*"))')
   }
   return ['-p', forms.join(' ')]
 }

@@ -1,4 +1,5 @@
-import { spawnSync } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
@@ -93,6 +94,50 @@ describe.skipIf(!seatbeltUsable)('sandbox-local: real Seatbelt confinement throu
     const denied = await runConfined(sandbox, `echo hi > ${outside}/denied.txt`, { mode: 'workspace-write', workspaceRoot: workdir })
     expect(denied.result.status).not.toBe(0)
     expect(existsSync(join(outside, 'denied.txt'))).toBe(false)
+  })
+
+  it('network off refuses a connection to another host and still reaches loopback', async () => {
+    const workdir = await tempDir(homedir())
+    const sandbox = await provider()
+    const policy: SandboxPolicy = { mode: 'workspace-write', workspaceRoot: workdir, network: { mode: 'off' } }
+    // 192.0.2.1 is reserved for documentation: unconfined it would time out; confined it is refused at once.
+    const outside = await runConfined(sandbox, 'curl -sS -m 5 http://192.0.2.1/ 2>&1; echo "exit=$?"', policy)
+    expect(outside.result.stdout).not.toContain('exit=0')
+    expect(outside.result.stdout).not.toMatch(/timed out/i)
+    const server = createServer((_req, res) => { res.end('loopback-ok') })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const port = (server.address() as { port: number }).port
+      const confined = await sandbox.confine(['curl', '-sS', '-m', '5', `http://127.0.0.1:${port}/`], policy)
+      const local = await new Promise<string>((resolve) => {
+        execFile(confined.argv[0] as string, confined.argv.slice(1), { timeout: 10_000 }, (_error, stdout) => resolve(stdout))
+      })
+      expect(local).toBe('loopback-ok')
+    } finally {
+      await new Promise(resolve => server.close(resolve))
+    }
+  })
+
+  it('network allowlist admits listed hosts through the proxy and refuses the rest with a 403', async () => {
+    const workdir = await tempDir(homedir())
+    const sandbox = await provider()
+    const server = createServer((_req, res) => { res.end('allowed-ok') })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const port = (server.address() as { port: number }).port
+      const policy: SandboxPolicy = { mode: 'workspace-write', workspaceRoot: workdir, network: { mode: 'allowlist', hosts: ['127.0.0.1'] } }
+      const run = async (url: string) => {
+        // curl skips the proxy for loopback through NO_PROXY, so ask for it explicitly here.
+        const confined = await sandbox.confine(['bash', '-c', `curl -sS -m 5 --proxy "$HTTP_PROXY" --noproxy '' ${url}`], policy)
+        return new Promise<string>((resolve) => {
+          execFile(confined.argv[0] as string, confined.argv.slice(1), { timeout: 10_000 }, (_error, stdout) => resolve(stdout))
+        })
+      }
+      expect(await run(`http://127.0.0.1:${port}/`)).toBe('allowed-ok')
+      expect(await run('http://example.com/')).toMatch(/blocked network access to example\.com/)
+    } finally {
+      await new Promise(resolve => server.close(resolve))
+    }
   })
 
   it('workspace-write grants /tmp and the user temp dir (the documented Seatbelt-profile temp areas)', async () => {

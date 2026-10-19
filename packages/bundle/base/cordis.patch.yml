@@ -248,6 +248,11 @@
       config:
         mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
         workspaceRoot: !!js process.cwd()
+        # Network for confined commands: on, off or allowlist. A settings page saves the person's choice
+        # in this file, which replaces the two values below when present.
+        network: 'on'
+        allowedHosts: []
+        networkFile: !!js dshHomePath('harness-studio', 'network.json')
 
     - id: bash-sandbox
       name: '@deepseek-ai/dsh-bash-sandbox'

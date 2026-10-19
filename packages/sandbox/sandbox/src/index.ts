@@ -25,9 +25,32 @@ export { canonicalPath, writableRoots } from './roots.ts'
  * File-effect policy for confined processes. `read-only` permits only required
  * sinks such as `/dev/null`; `workspace-write` also permits the workspace and a
  * backend-defined temp area; `danger-full-access` bypasses confinement. Network
- * and process visibility are outside this vocabulary.
+ * access is the separate {@link SandboxNetwork}; process visibility is outside
+ * this vocabulary.
  */
 export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'
+
+/**
+ * Network policy for confined processes, applied alongside the file-effect
+ * mode. `on` leaves connections as the host allows them. `off` blocks direct
+ * connections to other hosts: Seatbelt still permits the loopback interface,
+ * while bwrap gives the process a network namespace of its own with only
+ * loopback. `allowlist` blocks direct connections as `off` does and routes
+ * HTTP and HTTPS through a proxy the backend runs, which admits only `hosts`;
+ * the backend sets the standard proxy variables in the process environment,
+ * so a program that ignores them cannot connect directly. Neither `off` nor
+ * `allowlist` is a complete barrier: programs on the same computer that
+ * forward traffic (a local proxy or SSH tunnel on loopback under Seatbelt, or
+ * on a Unix socket under either), and system services such as macOS `open` or
+ * the Docker socket, can still reach other hosts. A host entry matches that
+ * exact name; `*.example.com` matches its subdomains. A backend that cannot
+ * enforce `off` or `allowlist` fails closed with {@link SandboxUnavailableError}.
+ * `danger-full-access` bypasses confinement and with it this policy.
+ */
+export type SandboxNetwork =
+  | { readonly mode: 'on' }
+  | { readonly mode: 'off' }
+  | { readonly mode: 'allowlist'; readonly hosts: readonly string[] }
 
 /** A confining (non-`danger-full-access`) mode — the modes a {@link SandboxPolicy} can carry. */
 export type ConfinedSandboxMode = Exclude<SandboxMode, 'danger-full-access'>
@@ -50,6 +73,8 @@ export interface SandboxExecutionPolicy {
    * for agentless calls, which fall back to per-call backend state.
    */
   sessionId?: SessionId
+  /** Network policy for this execution; absent means `{ mode: 'on' }`. */
+  network?: SandboxNetwork
 }
 
 /**
@@ -141,6 +166,22 @@ export class SandboxUnavailableError extends HarnessError {
       SANDBOX_UNAVAILABLE,
     )
     this.name = 'SandboxUnavailableError'
+  }
+}
+
+/**
+ * Thrown when {@link SandboxProvider.confine} is asked to limit network access
+ * (`off` or `allowlist`) but the selected backend cannot enforce it. Carries
+ * {@link SANDBOX_UNAVAILABLE}, like {@link SandboxUnavailableError}.
+ */
+export class SandboxNetworkUnavailableError extends HarnessError {
+  constructor(network: SandboxNetwork['mode'], detail: string) {
+    super(
+      `network "${network}" is requested but this host's sandbox cannot limit network access; `
+      + `refusing to run the command with unrestricted network. ${detail}`,
+      SANDBOX_UNAVAILABLE,
+    )
+    this.name = 'SandboxNetworkUnavailableError'
   }
 }
 
