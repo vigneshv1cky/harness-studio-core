@@ -227,6 +227,15 @@ export interface SessionInputResolver {
    * @throws when binding is not the currently retained Session generation.
    */
   requestDraftInitialization(binding: SessionBinding, options: DraftInitializationOptions): DraftInitializationResult
+  /**
+   * Put the text of a message taken back before the agent read it into the Session's composer: into an empty
+   * draft as it was, else above the current draft, so nothing typed since is lost.
+   * @param binding - target Session generation, already retained by the caller.
+   * @param text - the message text.
+   * @returns false after disposal or while a submission is pending.
+   * @throws when binding is not the currently retained Session generation.
+   */
+  restoreUnsent(binding: SessionBinding, text: string): boolean
 }
 
 /** Initial text for a target Session; attachments remain under their existing owner. */

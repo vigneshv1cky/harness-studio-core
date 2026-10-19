@@ -282,6 +282,12 @@ export function apply(ctx: Context): void {
             },
             read: () => chatScrollPositions.get(sessionId) ?? null,
           },
+          unsendSteering: async (itemId, text) => {
+            const result = await session.updateQueue(itemId, { kind: 'remove' })
+            if (!result.ok) return false
+            ctx.get('conversation')?.input.restoreUnsent(binding, text)
+            return true
+          },
           forkAt: (seq) => {
             const turn = [...chat.getSnapshot().timeline.turns.values()].find(turn => turn.end?.seq === seq)
             const messageId = turn?.data.get('turn-tail')?.closing?.finalNode.messageId

@@ -323,6 +323,13 @@ export interface ChatViewInjected {
   }
   forkAt: (seq: number) => void
   fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined
+  /**
+   * Take back a message sent while the agent works, before the agent reads it, and put its text into the composer.
+   * @param itemId - the waiting message's inbox occurrence.
+   * @param text - the message text the composer receives.
+   * @returns false when the agent had already read the message.
+   */
+  unsendSteering: (itemId: MessageId, text: string) => Promise<boolean>
 }
 
 /** Existing Session-owned node sources shared by the view and its flow renderer. */
@@ -335,6 +342,10 @@ export interface ChatFlowOwnerProps extends Pick<ChatNodeOwnerProps,
   readonly pendingInputs: readonly (PendingSubmission | InboxState['next-step'][number])[]
   readonly lastInputTurn: number | undefined
   readonly deferCollapse: boolean
+  /** Inbox occurrence of each local steering echo the agent has not read yet, by request id. */
+  readonly steeringItemIds?: ReadonlyMap<PendingSubmission['requestId'], MessageId> | undefined
+  /** Take back one waiting steering message; omitted where the view offers no Unsend. */
+  readonly unsendSteering?: ChatViewInjected['unsendSteering'] | undefined
 }
 
 /** Full props of the Chat-owned flow renderer. */

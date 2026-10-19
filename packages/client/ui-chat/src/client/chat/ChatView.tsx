@@ -60,7 +60,7 @@ const MOTION_TAIL_MS = 800
 export function ChatView({
   useSession, useChat, useConversation, useSessions, renderSlot,
   sessionId, openFile, openExternalLink, loadOlder, loadThrough, loadImage, inspectCall, chatScroll, forkAt, fileMentions,
-  usePresentation, useProjection, t,
+  unsendSteering, usePresentation, useProjection, t,
 }: ChatViewSlotProps) {
   const order = useChat(s => s.order)
   const groupedEntries = useConversation(snapshot => snapshot.views.grouped('chat')?.entries)
@@ -148,6 +148,10 @@ export function ChatView({
     () => inbox?.['next-step'].filter(message => message.source.kind === 'user') ?? [],
     [inbox],
   )
+  // A steering message stays takeable until the agent's next step claims it out of the inbox.
+  const steeringItemIds = useMemo(() => new Map(inboxSteering.flatMap(item => (
+    item.source.kind === 'user' && 'rpcId' in item.source ? [[item.source.rpcId, item.id] as const] : []
+  ))), [inboxSteering])
   const pendingSubmissions = useSession(s => s.pendingSubmissions)
   // Submission echoes still awaiting their durable counterpart. `order` is the
   // recompute trigger: durable user material always arrives as an append, and
@@ -225,7 +229,7 @@ export function ChatView({
             )}
             <MarkdownDelegateProvider openFile={requestOpenFile} openExternalLink={openExternalLink} fileImages={fileImages}>
               {renderSlot('conversation.chat.flow', {
-                entries, pendingInputs, lastInputTurn, deferCollapse,
+                entries, pendingInputs, lastInputTurn, deferCollapse, steeringItemIds, unsendSteering,
                 cwd, openFile: requestOpenFile, inspectCall, forkAt, loadImage, fileMentions,
               }, { hookContext: flowContext })}
             </MarkdownDelegateProvider>

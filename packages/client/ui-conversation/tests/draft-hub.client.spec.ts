@@ -213,6 +213,15 @@ it('imports reference chips on the first Hub shell and preserves them without an
   expect(b.hub.shellFor(b.binding).draftSnapshot).toEqual({ text: '', references: [] })
 })
 
+it('puts a taken-back message into an empty draft, else above the current text', async () => {
+  const b = await fixture({ text: '', references: [] })
+  expect(b.hub.restoreUnsent(b.binding, 'taken back')).toBe(true)
+  expect(b.shell.draftSnapshot.text).toBe('taken back')
+  b.shell.setDraft('typed since')
+  expect(b.hub.restoreUnsent(b.binding, 'second')).toBe(true)
+  expect(b.shell.draftSnapshot.text).toBe('second\n\ntyped since')
+})
+
 it('subscribes when a provider arrives and disconnects each withdrawn provider', async () => {
   const b = await fixture(saved)
   expect(b.shell.actions.insertText('/current', {

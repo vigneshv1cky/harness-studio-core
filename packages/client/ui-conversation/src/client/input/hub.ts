@@ -93,6 +93,16 @@ export class InputHub implements SessionInputResolver {
     return this.shellFor(binding).requestDraftInitialization(options)
   }
 
+  restoreUnsent(binding: SessionBinding, text: string): boolean {
+    if (this.sessions().binding(binding.sessionId) !== binding) {
+      throw new Error('conversation.input.restoreUnsent requires a retained Session binding')
+    }
+    const shell = this.shellFor(binding)
+    if (!shell.restoreUnsent(text)) return false
+    shell.focus()
+    return true
+  }
+
   /**
    * Resolve the resident shell for an already-retained, addressable Session binding.
    * Draft import completes before return. The Session scope owns input listeners,
@@ -199,7 +209,8 @@ export class InputHub implements SessionInputResolver {
   private adoptUnsent(sessionId: SessionId, shell: SessionInputShell): void {
     const now = Date.now()
     for (let index = 0; index < this.unsent.length;) {
-      const entry = this.unsent[index]!
+      const entry = this.unsent[index]
+      if (entry === undefined) break
       const stale = now - entry.at > UNSENT_ADOPTION_MS
       if (entry.sessionId !== sessionId && stale) {
         this.unsent.splice(index, 1)

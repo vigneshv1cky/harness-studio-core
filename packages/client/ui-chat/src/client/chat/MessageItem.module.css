@@ -362,3 +362,25 @@
   font-size: 12px;
   line-height: 15px;
 }
+
+/* Text action beside copy on a message the agent has not read yet. */
+.unsend {
+  height: calc(24px + var(--dsh-content-font-delta, 0px));
+  padding: 0 8px;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  cursor: pointer;
+}
+
+.unsend:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+}
+
+.unsend:disabled {
+  cursor: default;
+  opacity: 0.5;
+}

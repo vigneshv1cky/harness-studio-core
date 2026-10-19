@@ -1,5 +1,6 @@
 /** Ordered Chat rows, local echoes, and running status share the flow slot's parent. */
 import { memo } from 'react'
+import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import type { ChatFlowSlotProps } from '../contract/slots.ts'
 import { ChatNodeSeat } from './ChatNodeSeat.tsx'
@@ -10,7 +11,7 @@ import { RunningStatus } from './RunningStatus.tsx'
 
 /** Render the flow without adding a DOM parent or changing keyed row positions. */
 export const ChatFlow = memo(function ChatFlow({
-  entries, pendingInputs, lastInputTurn, deferCollapse,
+  entries, pendingInputs, lastInputTurn, deferCollapse, steeringItemIds, unsendSteering,
   useSession, useChat, useChatNode, useChatNodeBottom, useChatNodeProcess, useChatGroup, usePresentation,
   useStore, actions, renderSlot, renderFactorySlot, t, useGroupAction, useGroupHeaderAction,
   cwd, openFile, inspectCall, forkAt, loadImage, fileMentions,
@@ -41,13 +42,26 @@ export const ChatFlow = memo(function ChatFlow({
         return assertNever(entry)
     }
   })
-  const pendingRows = pendingInputs.map(item => 'requestId' in item ? (
-    <PendingSubmissionBubble key={item.requestId} submission={item}
-      loadImage={loadImage} renderFactorySlot={renderFactorySlot} t={t} />
-  ) : (
-    <PendingSteeringBubble key={item.id} content={item.content}
-      loadImage={loadImage} renderFactorySlot={renderFactorySlot} t={t} />
-  ))
+  // Only text-only messages can be taken back: attachments have no place to return to in the composer.
+  const unsendFor = (itemId: MessageId | undefined, text: string) => (
+    itemId === undefined || unsendSteering === undefined ? undefined : () => unsendSteering(itemId, text)
+  )
+  const pendingRows = pendingInputs.map((item) => {
+    if ('requestId' in item) {
+      const itemId = item.placement === 'steering' && item.attachments.length === 0
+        ? steeringItemIds?.get(item.requestId) : undefined
+      return (
+        <PendingSubmissionBubble key={item.requestId} submission={item} onUnsend={unsendFor(itemId, item.text)}
+          loadImage={loadImage} renderFactorySlot={renderFactorySlot} t={t} />
+      )
+    }
+    const texts = item.content.flatMap(part => part.type === 'text' ? [part.text] : [])
+    return (
+      <PendingSteeringBubble key={item.id} content={item.content}
+        onUnsend={texts.length === item.content.length ? unsendFor(item.id, texts.join('\n')) : undefined}
+        loadImage={loadImage} renderFactorySlot={renderFactorySlot} t={t} />
+    )
+  })
   const tail = entries.at(-1)
   const node = tail?.kind === 'node' ? nodeStore.get(tail.key) : undefined
   // An empty opening control follows one local transcript echo, never steering.

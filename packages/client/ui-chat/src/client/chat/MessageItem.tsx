@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import type { PendingSubmission } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
 import type { UserTextFacts } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { JsonBlock, StateDot, TextShimmer } from '@deepseek-ai/dsh-client-ui-primitives'
+import { JsonBlock, StateDot, TextShimmer, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
   ChatNodeOwnerProps, ChatNodeViewProps, ChatViewSlotProps, UserContentAttachment, UserContentData, UserContentInput,
 } from '../contract/slots.ts'
@@ -212,13 +212,44 @@ function UserStyleBubble({
 }
 
 /**
+ * Unsend control on a message the agent has not read yet. It stays disabled while the request is in flight; when
+ * the agent read the message first, the bubble becomes the delivered message instead.
+ * @param props - the take-back callback and locale seat.
+ * @returns the Unsend button.
+ */
+function UnsendAction({ onUnsend, t }: { onUnsend: () => Promise<boolean>; t: ChatViewSlotProps['t'] }): ReactNode {
+  const [busy, setBusy] = useState(false)
+  return (
+    <Tooltip portal label={t('message.unsendHint')} side="bottom">
+      <button
+        type="button"
+        className={css.unsend}
+        aria-label={t('message.unsend')}
+        disabled={busy}
+        onClick={() => {
+          setBusy(true)
+          onUnsend().then(() => { setBusy(false) }, (error: unknown) => {
+            setBusy(false)
+            console.error('[ui-chat] unsend failed:', error)
+          })
+        }}
+      >
+        {t('message.unsend')}
+      </button>
+    </Tooltip>
+  )
+}
+
+/**
  * Render one Host-authoritative pending steering item with the same visual
  * language as its eventual durable transcript node.
  * @param props - pending content, authorized image loader, and Factory/locale seats.
  * @returns the pending steering bubble.
  */
-export function PendingSteeringBubble({ content, loadImage, renderFactorySlot, t }: {
+export function PendingSteeringBubble({ content, onUnsend, loadImage, renderFactorySlot, t }: {
   content: readonly unknown[]
+  /** Take the message back; omitted when it cannot be. */
+  onUnsend?: (() => Promise<boolean>) | undefined
   renderFactorySlot: PropsRenderFactories['renderFactorySlot']
   t: ChatViewSlotProps['t']
 } & Pick<ChatNodeOwnerProps, 'loadImage'>): ReactNode {
@@ -233,6 +264,7 @@ export function PendingSteeringBubble({ content, loadImage, renderFactorySlot, t
           text={text}
           clock="start"
           className={css.actions}
+          extraActions={onUnsend === undefined ? undefined : <UnsendAction onUnsend={onUnsend} t={t} />}
           t={t}
         />
       )}
@@ -248,8 +280,10 @@ export function PendingSteeringBubble({ content, loadImage, renderFactorySlot, t
  * @param props - the pending submission, authorized image loader, and render seats.
  * @returns the echoed user bubble.
  */
-export function PendingSubmissionBubble({ submission, loadImage, renderFactorySlot, t }: {
+export function PendingSubmissionBubble({ submission, onUnsend, loadImage, renderFactorySlot, t }: {
   submission: PendingSubmission
+  /** Take the message back; omitted when it cannot be. */
+  onUnsend?: (() => Promise<boolean>) | undefined
   renderFactorySlot: PropsRenderFactories['renderFactorySlot']
   t: ChatViewSlotProps['t']
 } & Pick<ChatNodeOwnerProps, 'loadImage'>): ReactNode {
@@ -287,6 +321,7 @@ export function PendingSubmissionBubble({ submission, loadImage, renderFactorySl
           time={submission.time}
           clock="start"
           className={css.actions}
+          extraActions={onUnsend === undefined ? undefined : <UnsendAction onUnsend={onUnsend} t={t} />}
           t={t}
         />
       )}
