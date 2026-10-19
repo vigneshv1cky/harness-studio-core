@@ -1,6 +1,6 @@
 /** Desktop resource preparation publishes versions only for complete resources. */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,6 +13,8 @@ const state = vi.hoisted(() => ({
   failure: undefined as 'electron' | 'primary' | 'cli' | undefined,
   preparePrimary: vi.fn(),
   commandLink: vi.fn(),
+  /** Arguments of each `xcrun` call: the computer-use helper's Swift build. */
+  swift: [] as string[][],
 }))
 vi.mock('../scripts/desktop-build-paths.mjs', async importOriginal => ({
   ...await importOriginal<typeof import('../scripts/desktop-build-paths.mjs')>(),
@@ -27,7 +29,17 @@ vi.mock('extract-zip', () => ({ default: async () => {
 } }))
 vi.mock('node:child_process', async importOriginal => ({
   ...await importOriginal<typeof import('node:child_process')>(),
-  execFileSync: (file: string) => file === '/usr/libexec/PlistBuddy' ? '12.0\n' : '24.18.1\n',
+  execFileSync: (file: string, args: readonly string[] = []) => {
+    if (file === '/usr/libexec/PlistBuddy') return '12.0\n'
+    if (file !== 'xcrun') return '24.18.1\n'
+    state.swift.push([...args])
+    if (!args.includes('--show-bin-path')) return ''
+    // The Swift products folder, holding a stand-in for the built helper.
+    const products = join(state.root, 'swift-products')
+    mkdirSync(products, { recursive: true })
+    writeFileSync(join(products, 'dsh-cua-native'), 'helper fixture')
+    return `${products}\n`
+  },
 }))
 vi.mock('../scripts/prepare-command-link.ts', () => ({ prepareCommandLink: state.commandLink }))
 // The compiled command manager is a build input; all source resource copies use real files.
@@ -52,6 +64,7 @@ beforeEach(() => {
   state.target = 'mac-arm64'
   state.pnpm = '11.7.0'
   state.failure = undefined
+  state.swift = []
   process.argv = [process.execPath, 'prepare-runtime.ts']
   vi.stubEnv('DSH_DESKTOP_PACKAGING_RUN_DIR', undefined)
   state.preparePrimary.mockImplementation(async () => {
@@ -93,6 +106,16 @@ it.each(['mac-arm64', 'mac-x64', 'win-x64'] as const)('prepares %s with one pnpm
   expect(state.preparePrimary).toHaveBeenCalledWith({ deferSmoke: windows })
   if (windows) expect(state.commandLink).not.toHaveBeenCalled()
   else expect(state.commandLink).toHaveBeenCalledWith(join(runtime, 'cli'), target === 'mac-arm64' ? 'arm64' : 'x64', '12.0')
+  // Harness Studio: macOS packages ship computer use's native helper, built for the target architecture.
+  const helper = join(runtime, 'cua', 'dsh-cua-native')
+  if (windows) {
+    expect(existsSync(join(runtime, 'cua'))).toBe(false)
+    expect(state.swift).toEqual([])
+  } else {
+    expect(readFileSync(helper, 'utf8')).toBe('helper fixture')
+    expect(statSync(helper).mode & 0o111).not.toBe(0)
+    expect(state.swift[0]).toEqual(expect.arrayContaining(['swift', 'build', '--product', 'dsh-cua-native', '--arch', target === 'mac-arm64' ? 'arm64' : 'x86_64']))
+  }
 })
 
 it.each([
