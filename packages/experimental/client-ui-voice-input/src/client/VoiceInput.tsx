@@ -11,6 +11,7 @@ import type { MicrophoneDevice } from './microphone-device.ts'
 import type { SpeechReadiness } from './readiness.ts'
 import { Waveform } from './Waveform.tsx'
 import { VoiceSetupDialog } from './VoiceSetupDialog.tsx'
+import { LanguageMenu } from './LanguageMenu.tsx'
 import { NS } from './locales.ts'
 import { Button, IconCloseOutlineRegular, IconStopFillRegular, IconMicrophoneOutlineRegular, StateDot, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import css from './VoiceInput.module.css'
@@ -44,6 +45,8 @@ interface ActiveRecording {
   readonly abort: AbortController
   readonly span: TokenSpan
   readonly selection: SpeechSelection
+  /** Language for this recording; the recording bar's menu may change it before Stop. */
+  language: string
   readonly maxDurationSeconds: number
   readonly maxAudioBytes: number
   phase: 'requesting' | 'recording' | 'transcribing'
@@ -58,13 +61,14 @@ async function disposeRecording(capture: Recording): Promise<void> {
 
 /** Render a compact microphone or an expanded capture, transcription, or retry row. */
 export function VoiceInput({ sessionId, inputActions, locked, onActiveChange,
-  createRecording, transcribe, openSettings, useSpeechReadiness, t }: VoiceInputProps) {
+  createRecording, transcribe, configure, openSettings, useSpeechReadiness, t }: VoiceInputProps) {
   const readiness = useSpeechReadiness(value => value), catalog = readiness.catalog
   const provider = catalog?.providers.find(item => item.id === catalog.selection.providerId)
   const usable = readiness.connected && (provider?.preparation.phase === 'ready' || provider?.preparation.phase === 'standby'
     || provider?.preparation.phase === 'waking')
   const [phase, setPhase] = useState<Phase>('idle'), [message, setMessage] = useState(''), [pending, setPending] = useState('')
-  const [setupOpen, setSetupOpen] = useState(false)
+  const [setupOpen, setSetupOpen] = useState(false), [language, setLanguage] = useState('')
+  const languageMenuOpen = useRef(false)
   useEffect(() => { if (usable) setSetupOpen(false) }, [usable])
   const current = useRef<ActiveRecording>(), generation = useRef(0)
   const expanded = phase !== 'idle'
@@ -84,7 +88,8 @@ export function VoiceInput({ sessionId, inputActions, locked, onActiveChange,
       if (document.hidden && current.current && current.current.phase !== 'transcribing') cancel()
     }
     const escape = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape' && current.current) { event.preventDefault(); cancel() }
+      // Escape belongs to an open language menu, which may handle it first and mark it handled.
+      if (event.key === 'Escape' && current.current && !languageMenuOpen.current && !event.defaultPrevented) { event.preventDefault(); cancel() }
     }
     window.addEventListener('blur', blur); document.addEventListener('visibilitychange', visibility)
     document.addEventListener('keydown', escape)
@@ -109,7 +114,8 @@ export function VoiceInput({ sessionId, inputActions, locked, onActiveChange,
       const audio = await active.capture.stop(active.maxDurationSeconds)
       if (run !== generation.current) return
       if (audio.byteLength > active.maxAudioBytes) { feedback(t('tooLarge')); return }
-      const result = await transcribe({ audioBase64: audioBase64(audio), ...active.selection }, active.abort.signal)
+      const request = { audioBase64: audioBase64(audio), ...active.selection, language: active.language }
+      const result = await transcribe(request, active.abort.signal)
       if (run !== generation.current) return
       if (!result.ok) { feedback(t('failed', { message: result.error.message })); return }
       if (result.value.text === '') { feedback(t('empty')); return }
@@ -124,10 +130,10 @@ export function VoiceInput({ sessionId, inputActions, locked, onActiveChange,
     if (!catalog || !usable || locked || current.current) return
     const run = ++generation.current
     const active: ActiveRecording = { capture: createRecording(), abort: new AbortController(),
-      span: inputActions.captureInsertion(), selection: catalog.selection,
+      span: inputActions.captureInsertion(), selection: catalog.selection, language: catalog.selection.language,
       maxDurationSeconds: catalog.maxDurationSeconds, maxAudioBytes: catalog.maxAudioBytes, phase: 'requesting' }
     current.current = active
-    setMessage(''); setPending(''); setPhase('requesting')
+    setMessage(''); setPending(''); setLanguage(active.language); setPhase('requesting')
     try {
       await active.capture.start((failure) => {
         if (run !== generation.current || current.current !== active || active.phase === 'transcribing') return
@@ -163,6 +169,14 @@ export function VoiceInput({ sessionId, inputActions, locked, onActiveChange,
         {(phase === 'requesting' || phase === 'transcribing') && <StateDot state="ongoing" />}
         {phase === 'feedback' ? message : t(phase === 'requesting' ? 'requesting'
           : provider?.preparation.phase === 'waking' ? 'wakingShort' : 'transcribingShort')}</span>}
+    {phase === 'recording' && provider && <LanguageMenu languages={provider.languages} value={language} t={t}
+      onOpenChange={(open) => { languageMenuOpen.current = open }}
+      onChange={(next) => {
+        // The menu renders only while recording, so the recording exists.
+        (current.current as ActiveRecording).language = next; setLanguage(next)
+        // A failed save leaves this recording's choice; the bundle details still show the saved value.
+        void configure({ language: next }).catch(() => undefined)
+      }} />}
     {phase === 'recording' && <Button type="button" className={css.roundButton} size="sm" aria-label={t('stop')}
       onClick={() => { void finish() }}><IconStopFillRegular size={14} /></Button>}
     {phase === 'feedback' && (pending
