@@ -18,6 +18,12 @@
   background: #000;
 }
 
+/* Audio has no picture: a player of comfortable width, centred. */
+.audio {
+  display: block;
+  width: min(100%, 640px);
+}
+
 .status {
   display: flex;
   align-items: center;

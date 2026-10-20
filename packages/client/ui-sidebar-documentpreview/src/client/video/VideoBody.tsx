@@ -1,4 +1,4 @@
-/** Complete video bytes played with the browser's own controls. */
+/** Complete video and audio bytes played with the browser's own controls. */
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { pathPartsOf } from '@deepseek-ai/dsh-util-workspace-path'
@@ -19,9 +19,20 @@ const VIDEO_MEDIA_TYPES = {
   webm: 'video/webm',
 } as const
 
-type VideoMediaType = typeof VIDEO_MEDIA_TYPES[keyof typeof VIDEO_MEDIA_TYPES]
+/** Audio media types by suffix; Opus files are Ogg containers. */
+const AUDIO_MEDIA_TYPES = {
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  opus: 'audio/ogg',
+  flac: 'audio/flac',
+} as const
 
-/** Standard document props plus the video renderer's dictionary. */
+type VideoMediaType = typeof VIDEO_MEDIA_TYPES[keyof typeof VIDEO_MEDIA_TYPES] | typeof AUDIO_MEDIA_TYPES[keyof typeof AUDIO_MEDIA_TYPES]
+
+/** Standard document props plus the video and audio renderers' dictionary. */
 export type VideoBodyProps = DocumentPreviewProps & PropsLocale<'sidebarVideo'>
 
 type VideoSource =
@@ -31,17 +42,17 @@ type VideoSource =
 /**
  * Resolve a supported filename to the media type assigned to its Blob.
  * @param path - decoded workspace file path.
- * @returns the video media type, or undefined for an unregistered suffix.
+ * @returns the video or audio media type, or undefined for an unregistered suffix.
  */
 export function videoMediaType(path: string): VideoMediaType | undefined {
   const normalized = path.replaceAll('\\', '/')
   const name = normalized.slice(normalized.lastIndexOf('/') + 1).toLowerCase()
-  const extension = name.slice(name.lastIndexOf('.') + 1) as keyof typeof VIDEO_MEDIA_TYPES
-  return VIDEO_MEDIA_TYPES[extension]
+  const extension = name.slice(name.lastIndexOf('.') + 1)
+  return VIDEO_MEDIA_TYPES[extension as keyof typeof VIDEO_MEDIA_TYPES] ?? AUDIO_MEDIA_TYPES[extension as keyof typeof AUDIO_MEDIA_TYPES]
 }
 
 /**
- * Play complete video bytes in the pane, fitted to its width, with the browser's controls and looping.
+ * Play complete video or audio bytes in the pane, fitted to its width, with the browser's controls; video loops.
  * @param props - document bytes, resource identity, and locale.
  * @returns the player, or a status line while loading or after a decode failure.
  */
@@ -72,12 +83,16 @@ export function VideoBody(props: VideoBodyProps): ReactNode {
     return <p className={css.status} role="alert">{t('unsupported')}</p>
   }
   if (source?.data !== data) return <LoadingIndicator label={t('loading')} />
-  if (source.kind === 'failed' || !playable) return <p className={css.status} role="alert">{t('failed')}</p>
+  const audio = mediaType.startsWith('audio/')
+  if (source.kind === 'failed' || !playable) return <p className={css.status} role="alert">{t(audio ? 'audioFailed' : 'failed')}</p>
   const { name } = pathPartsOf(path)
   return (
-    <div className={css.frame} data-video-preview>
-      <video key={source.url} className={css.video} src={source.url} controls loop playsInline preload="metadata"
-        aria-label={t('preview', { name })} onError={() => { setPlayable(false) }} />
+    <div className={css.frame} data-video-preview data-media-preview={audio ? 'audio' : 'video'}>
+      {audio
+        ? <audio key={source.url} className={css.audio} src={source.url} controls preload="metadata"
+          aria-label={t('audioPreview', { name })} onError={() => { setPlayable(false) }} />
+        : <video key={source.url} className={css.video} src={source.url} controls loop playsInline preload="metadata"
+          aria-label={t('preview', { name })} onError={() => { setPlayable(false) }} />}
     </div>
   )
 }

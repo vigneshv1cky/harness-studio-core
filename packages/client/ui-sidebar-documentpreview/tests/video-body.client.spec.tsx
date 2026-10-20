@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-/** Video Blob ownership, media types, player rendering, failure states, and registration. */
+/** Video and audio Blob ownership, media types, player rendering, failure states, and registration. */
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
@@ -7,7 +7,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { TabId } from '@deepseek-ai/dsh-client-ui-dockkit'
 import { DocumentPreviewRegistry } from '../src/client/document/registry.ts'
 import { VideoBody, videoMediaType, type VideoBodyProps } from '../src/client/video/VideoBody.tsx'
-import { apply, VIDEO_BODY_ID, VIDEO_EXTENSIONS, videoBodyDefinition } from '../src/client/video/index.ts'
+import { apply, AUDIO_BODY_ID, AUDIO_EXTENSIONS, audioBodyDefinition, VIDEO_BODY_ID, VIDEO_EXTENSIONS, videoBodyDefinition } from '../src/client/video/index.ts'
 import { en, zh } from '../src/client/video/locales.ts'
 
 const translations: ReadonlyMap<string, string> = new Map(Object.entries(en))
@@ -57,6 +57,11 @@ describe('VideoBody', () => {
     ['CLIP.M4V', 'video/mp4'],
     ['screen.mov', 'video/mp4'],
     ['loop.webm', 'video/webm'],
+    ['voice.mp3', 'audio/mpeg'],
+    ['memo.m4a', 'audio/mp4'],
+    ['take.WAV', 'audio/wav'],
+    ['call.opus', 'audio/ogg'],
+    ['master.flac', 'audio/flac'],
     ['notes.txt', undefined],
   ])('maps %s to %s', (path, type) => {
     expect(videoMediaType(path)).toBe(type)
@@ -72,6 +77,17 @@ describe('VideoBody', () => {
     expect(create.mock.calls[0]?.[0].type).toBe('video/mp4')
     view.unmount()
     expect(revoke).toHaveBeenCalledWith('blob:https://preview.invalid/1')
+  })
+
+  it('plays audio in an audio player without looping, and names it as audio', () => {
+    render(<VideoBody {...props('takes/voice.mp3')} />)
+    const audio = screen.getByLabelText('Audio preview: voice.mp3')
+    expect(audio.tagName).toBe('AUDIO')
+    expect(audio.hasAttribute('controls')).toBe(true)
+    expect(audio.hasAttribute('loop')).toBe(false)
+    expect(create.mock.calls[0]?.[0].type).toBe('audio/mpeg')
+    fireEvent.error(audio)
+    expect(screen.getByRole('alert').textContent).toBe(en.audioFailed)
   })
 
   it('says the video cannot be played when the browser cannot decode it', () => {
@@ -92,6 +108,10 @@ describe('video registration', () => {
     const title = vi.fn(() => 'localized video')
     expect(videoBodyDefinition(title)).toMatchObject({
       id: VIDEO_BODY_ID, extensions: VIDEO_EXTENSIONS, binaryExtensions: VIDEO_EXTENSIONS,
+      priority: 'builtin', loading: 'bytes-complete', wrap: false,
+    })
+    expect(audioBodyDefinition(title)).toMatchObject({
+      id: AUDIO_BODY_ID, extensions: AUDIO_EXTENSIONS, binaryExtensions: AUDIO_EXTENSIONS,
       priority: 'builtin', loading: 'bytes-complete', wrap: false,
     })
     expect(Object.keys(zh)).toEqual(Object.keys(en))
@@ -119,6 +139,7 @@ describe('video registration', () => {
     await fiber
     expect(dictionaries.get('sidebarVideo')).toEqual({ zh, en })
     expect(bodies.get(VIDEO_BODY_ID)).toBe(VideoBody)
+    expect(bodies.get(AUDIO_BODY_ID)).toBe(VideoBody)
     await fiber.dispose()
     expect(dictionaries.size).toBe(0)
     expect(bodies.size).toBe(0)
