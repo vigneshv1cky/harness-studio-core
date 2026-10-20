@@ -145,6 +145,14 @@ export interface ISessions {
     allowMigration?: boolean
   }): Promise<SessionId>
   /**
+   * Rewind a session in place to before one turn: its model context returns to
+   * before that turn and the Chat view hides the rewound turns. The Agent must be idle.
+   * @param opts - source session id and the turn to rewind before.
+   * @returns the sequence number of the committed replacement.
+   * @throws when the Host refuses the rewind, with its error code and message.
+   */
+  rewind(opts: { sessionId: SessionId; beforeTurn: number }): Promise<number>
+  /**
    * Borrow an already-retained Agent-scoped Context without extending its lifetime.
    * @param id - session id.
    * @returns the live scoped Context, or undefined without a retained generation.

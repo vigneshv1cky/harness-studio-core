@@ -485,6 +485,18 @@ export class ClientSessions implements ISessions {
   }
 
   /**
+   * Rewind a session in place to before one turn.
+   * @param opts - source session id and the turn to rewind before.
+   * @returns the sequence number of the committed replacement.
+   * @throws {Error} carrying the Host's error code and message when the rewind is refused.
+   */
+  async rewind(opts: { sessionId: SessionId; beforeTurn: number }): Promise<number> {
+    const result = await this.manager.rewind(opts)
+    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+    return result.value.seq
+  }
+
+  /**
    * Borrow an already-retained Agent-scoped Context.
    * @param id - session id (the agent identity — 1:1 same axis).
    * @returns the scoped Context, or undefined without a retained generation.

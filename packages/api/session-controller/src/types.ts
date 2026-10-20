@@ -226,6 +226,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'session/steer-unavailable': { readonly itemId: MessageId }
     'session/title-invalid': { readonly sessionId: SessionId }
     'session/fork-unavailable': { readonly sessionId: SessionId }
+    'session/rewind-unavailable': { readonly sessionId: SessionId }
     'session/migration-required': { readonly sessionId: SessionId }
     'subagent/not-found': {
       readonly parentSessionId: SessionId
@@ -343,6 +344,19 @@ export interface SessionForkRequest {
 /** Identity of a newly forked Session. */
 export interface SessionForkValue {
   readonly sessionId: SessionId
+}
+
+/** Session rewind request: set the model's context back to before one turn, in the same Session. */
+export interface SessionRewindRequest {
+  readonly sessionId: SessionId
+  /** Turn whose admission and everything after it leave the model-visible surface. */
+  readonly beforeTurn: number
+}
+
+/** The durable position a rewind committed. */
+export interface SessionRewindValue {
+  /** Seq of the empty `system/message` (step 0) that replaced the rewound surface range. */
+  readonly seq: number
 }
 
 /** Session prompt request. */

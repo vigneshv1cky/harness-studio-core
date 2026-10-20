@@ -577,6 +577,15 @@ export class SessionManager {
   }
 
   /**
+   * Contract session.rewind.
+   * @param opts - source session and the turn to rewind before.
+   * @returns the Host result.
+   */
+  rewind(opts: { sessionId: SessionId; beforeTurn: number }): Promise<RemoteResult<{ seq: number }>> {
+    return this.remote.session.rewind({ sessionId: opts.sessionId, beforeTurn: opts.beforeTurn })
+  }
+
+  /**
    * Rename a Session and update its title projection without opening its history.
    * @param sessionId - Session to rename.
    * @param title - raw title text for Host normalization.

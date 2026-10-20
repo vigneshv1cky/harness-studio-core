@@ -327,6 +327,9 @@ export interface SessionEventMap {
    * Empty later nodes are dormant and project to no message; an empty head with
    * no active later node records "no system prompt". Restored nonempty text follows
    * the same route and series rule; empty nodes never restore older text.
+   * An empty node with `step` 0, which no loop step uses, is an in-place
+   * rewind: it replaces every surface node after the rewound turn's cut, and
+   * `turn` names that turn.
    */
   'system/message': { turn: number; step: number; message: SystemMessage }
   /**

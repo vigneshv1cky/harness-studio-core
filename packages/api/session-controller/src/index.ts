@@ -56,6 +56,8 @@ import type {
   SessionPromptRequest,
   SessionPromptValue,
   SessionRenameRequest,
+  SessionRewindRequest,
+  SessionRewindValue,
   SessionRenameValue,
   SessionSearchRequest,
   SessionSearchValue,
@@ -450,6 +452,16 @@ export class SessionController extends TypertRemoteService {
       }
     }
     return this.commands.fork(request)
+  }
+
+  /**
+   * Rewind one Session in place to before a turn after explicitly resuming it.
+   * @param request - Session identity and the turn to rewind before.
+   * @returns the replacement's sequence number.
+   */
+  @Remote('rewind')
+  rewind(request: SessionRewindRequest): Promise<SessionRewindValue> {
+    return this.commands.rewind(request)
   }
 
   /**

@@ -60,7 +60,7 @@ Session 对象还承载本地提交回显：`session.beginSubmission` 在调用�
 
 面向用户调用的 `skills/list` 元数据包含胜出提供方可选的指令文件 `path`。输入框可据此预览文件，无需加载每个 skill 的正文或激活冷态 Agent。
 
-Fork 复制 `atSeq` 所选的精确事件前缀，包含切点事件，允许在开放轮次内截取。子会话在合成的 fork 结果和结束事件之前记录继承标记。省略 `atSeq` 时选择最近已结束轮次及其独立尾部，在下一轮次或排队输入之前停止；不存在的事件会被拒绝。`beforeTurn` 则选择该轮次被接纳之前的前缀，不包含其 `turn/start` 以及紧邻其前的 inbox splice 和追加的用户消息，并追加取消性的 inbox splice，使子会话不带任何待处理输入；它与 `atSeq` 互斥，不存在的轮次或之前没有事件的轮次会被拒绝。聊天操作选择已结束轮次。
+Fork 复制 `atSeq` 所选的精确事件前缀，包含切点事件，允许在开放轮次内截取。子会话在合成的 fork 结果和结束事件之前记录继承标记。省略 `atSeq` 时选择最近已结束轮次及其独立尾部，在下一轮次或排队输入之前停止；不存在的事件会被拒绝。`beforeTurn` 则选择该轮次被接纳之前的前缀，不包含其 `turn/start` 以及紧邻其前的 inbox splice 和追加的用户消息，并追加取消性的 inbox splice，使子会话不带任何待处理输入；它与 `atSeq` 互斥，不存在的轮次或之前没有事件的轮次会被拒绝。聊天操作选择已结束轮次。Rewind 则原地修改会话：`rewind({ sessionId, beforeTurn })` 要求 Agent 空闲，取消待处理输入，并追加一个 `step` 为 0、`turn` 为被回退轮次的空 `system/message`，替换所有代表切点之后事件的 surface 节点，使下一次请求恰好包含该轮次之前的上下文，日志仍然只追加。Surface 节点 0（系统提示词）保留。当某个 surface 替换同时覆盖切点前后的事件时（例如压缩同时总结了切点前后的上下文），会拒绝 rewind。聊天视图将这个 step 为 0 的替换识别为 rewind，并隐藏被回退轮次的行；Trajectory 保留它们。
 
 恢复会话时若已有写句柄占用，返回 `session/writer-held`，并携带会话 id；其他恢复失败仍返回 `gateway/internal`。
 

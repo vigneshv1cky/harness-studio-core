@@ -15,6 +15,7 @@ import { isAtOrOutside } from '../contract/group-tree.ts'
 import { locationCoordinates } from './common.ts'
 import { sessionRecallLabels, skillInvocationName } from './event-projection.ts'
 import { GroupTreeSegments } from './group-tree-segments.ts'
+import { rewoundRows } from './rewind.ts'
 import { sameTurnNavigationItem, turnNavigationItem } from './turn-navigation.ts'
 import { ChatTurnProcessProjector } from './turn-process-presentation.ts'
 
@@ -515,14 +516,16 @@ function presentationPosition(
 /**
  * Order visible Chat Nodes without changing existing relative order as process
  * eligibility changes. Opening input precedes process candidates, while
- * each synthetic process control sits between them.
+ * each synthetic process control sits between them. Rows of turns an in-place
+ * rewind removed are left out.
  * @param nodes - currently materialized Chat Nodes.
  * @returns visible Nodes in presentation order.
  */
 export function orderedVisibleChatNodes(
   nodes: readonly ChatConversationViewNode[],
 ): ChatConversationViewNode[] {
-  const visible = nodes.filter(node => isVisibleChatNode(node as ChatNode))
+  const rewound = rewoundRows(nodes)
+  const visible = nodes.filter(node => isVisibleChatNode(node as ChatNode) && !rewound(node))
   const presentations = turnProcessPresentations(visible)
   return visible.sort((left, right) => {
     const leftPosition = presentationPosition(left, presentations)

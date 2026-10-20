@@ -1019,6 +1019,17 @@ describe('fork', () => {
     expect(b.mock.remote.session.fork).toHaveBeenCalledExactlyOnceWith({ sessionId: 'source', atSeq: 41 })
   })
 
+  it('rewinds through the Remote and reports a refusal with its code', async ({ bench }) => {
+    const b = bench()
+    b.mock.remote.session.rewind.mockResolvedValueOnce(ok({ seq: 9 }))
+
+    await expect(b.svc.rewind({ sessionId: sid('source'), beforeTurn: 2 })).resolves.toBe(9)
+    expect(b.mock.remote.session.rewind).toHaveBeenCalledExactlyOnceWith({ sessionId: 'source', beforeTurn: 2 })
+
+    b.mock.remote.session.rewind.mockResolvedValueOnce(err(new RemoteError('session/agent-busy', 'rewind needs the agent to be idle', { reason: 'running' })))
+    await expect(b.svc.rewind({ sessionId: sid('source'), beforeTurn: 2 })).rejects.toThrow('session/agent-busy: rewind needs the agent to be idle')
+  })
+
   it('sends the turn to fork before verbatim', async ({ bench }) => {
     const b = bench()
     await feedList(b, [{ id: 'source', cwd: '/work' }])

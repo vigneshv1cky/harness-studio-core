@@ -26,6 +26,7 @@ import { developerMessageDefinition, messageDefinition } from '../src/client/con
 import { inspectRequestPrompt } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { requestPromptDefinition, systemMessageDefinition } from '../src/client/conversation-nodes/request-prompt.ts'
 import { retryDefinition } from '../src/client/conversation-nodes/retry.ts'
+import { rewindDefinition } from '../src/client/conversation-nodes/rewind.ts'
 import { toolDefinition } from '../src/client/conversation-nodes/tool.ts'
 import { turnErrorDefinition } from '../src/client/conversation-nodes/turn-error.ts'
 import { turnMaxTokensDefinition } from '../src/client/conversation-nodes/turn-max-tokens.ts'
@@ -48,6 +49,7 @@ const DEFINITIONS: readonly ConversationNodeDefinition[] = [
   commandDefinition,
   compactionDefinition,
   retryDefinition,
+  rewindDefinition,
   turnErrorDefinition,
   turnMaxTokensDefinition,
   turnTailDefinition,
@@ -223,6 +225,63 @@ function toolResult(callId: string, text: string, isError = false) {
     isError,
   }
 }
+
+/** One completed turn: a user prompt answered by one assistant step, starting at `seq`. */
+function turnAt(seq: number, turn: number, prompt: string, reply: string): SessionLiveEventEntry[] {
+  return [
+    at(seq, 'turn/start', { turn }),
+    at(seq + 1, 'step/start', { turn, step: 1 }),
+    at(seq + 2, 'user/message', textMessage(`u${String(turn)}`, prompt), { surfaceOp: 'append' }),
+    at(seq + 3, 'assistant/message', { turn, step: 1, message: assistantMessage(`a${String(turn)}`, reply) }, { surfaceOp: 'append' }),
+    at(seq + 4, 'step/end', { turn, step: 1 }),
+    at(seq + 5, 'turn/end', { turn, reason: { kind: 'completed' } }),
+  ]
+}
+
+describe('in-place rewind', () => {
+  const rewound = [
+    systemAt(0, 'prompt'),
+    ...turnAt(1, 1, 'first prompt', 'first reply'),
+    ...turnAt(7, 2, 'second prompt', 'second reply'),
+    at(13, 'system/message', { turn: 2, step: 0, message: systemMessage('') }, {
+      surfaceOp: { op: 'replace', startSeq: 9, endSeq: 10 }, sourceEventSeqs: [9, 10],
+    }),
+    ...turnAt(14, 3, 'edited prompt', 'edited reply'),
+  ]
+  const visibleTexts = (value: ChatSnapshot): string[] => value.order
+    .map(key => value.nodes.get(key))
+    .filter(candidate => candidate?.kind === 'user')
+    .map(candidate => JSON.stringify(candidate?.data))
+
+  it.each(['replay', 'live'] as const)('hides the rewound turns from the Chat rows (%s)', (mode) => {
+    const value = mode === 'replay' ? assembler(packedInputs(rewound)) : assembler()
+    if (mode === 'live') {
+      for (const entry of packedInputs(rewound)) {
+        value.append(entry)
+        value.flush()
+      }
+    }
+    const current = snapshot(value)
+    const users = visibleTexts(current)
+    expect(users).toHaveLength(2)
+    expect(users[0]).toContain('first prompt')
+    expect(users[1]).toContain('edited prompt')
+    const rows = current.order.map(key => current.nodes.get(key))
+    expect(rows.some(row => JSON.stringify(row?.data).includes('second reply'))).toBe(false)
+    expect(rows.some(row => row?.kind === 'rewind')).toBe(false)
+    expect(node(current, 'rewind')?.data).toEqual({ kind: 'rewind', seq: 13, turn: 2, startSeq: 9 })
+  })
+
+  it('leaves the rows alone for a system prompt replacement that is not a rewind', () => {
+    const value = assembler(packedInputs([
+      systemAt(0, 'prompt'),
+      ...turnAt(1, 1, 'kept prompt', 'kept reply'),
+      systemAt(7, 'new prompt', 0),
+    ]))
+    expect(visibleTexts(snapshot(value))).toHaveLength(1)
+    expect(node(snapshot(value), 'rewind')).toBeUndefined()
+  })
+})
 
 describe('built-in conversation node Definitions', () => {
   it.each(['replay', 'live', 'prepend'] as const)('keeps developer tool changes visible while hiding ordinary Context (%s)', (mode) => {

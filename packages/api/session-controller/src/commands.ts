@@ -12,11 +12,12 @@ import type {
 import type { FileUploadReceiptId } from '@deepseek-ai/dsh-client-file-upload/types'
 import type {} from '@deepseek-ai/dsh-client-file-upload'
 import {
-  ReasoningEffortId, assistantStreamChunks, createUserMessage, freezeMessage,
+  ReasoningEffortId, assistantStreamChunks, createSystemMessage, createUserMessage, freezeMessage,
 } from '@deepseek-ai/dsh-llm'
 import type { MessageSource } from '@deepseek-ai/dsh-llm'
 import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
 import { SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
+import { isReplacementSurfaceEvent } from '@deepseek-ai/dsh-session/surface'
 import type { SessionEvent, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
@@ -47,6 +48,8 @@ import type {
   SessionPromptValue,
   SessionRenameRequest,
   SessionRenameValue,
+  SessionRewindRequest,
+  SessionRewindValue,
   SessionSelectModelRequest,
   SessionSelectModelValue,
   SessionUpdateQueueRequest,
@@ -133,6 +136,19 @@ function discardPendingInput(seed: SessionEvent[]): SessionEvent[] {
     })
   }
   return seed
+}
+
+/**
+ * The earliest and latest original log positions a surface node stands for:
+ * its own seq when appended, the union of its replaced range otherwise.
+ */
+function surfaceOrigin(events: readonly SessionEvent[], seq: SessionSeq): { lo: number; hi: number } {
+  const event = events[seq]
+  if (event === undefined || !isReplacementSurfaceEvent(event)) return { lo: seq, hi: seq }
+  return {
+    lo: surfaceOrigin(events, event.surfaceOp.startSeq).lo,
+    hi: surfaceOrigin(events, event.surfaceOp.endSeq).hi,
+  }
 }
 
 /** Implements Session business commands delegated by the Session Controller Remote service. */
@@ -373,6 +389,62 @@ export class SessionCommandController {
       }
     }
     return { sessionId: childId }
+  }
+
+  /**
+   * Rewind a Session in place to before one turn. The log stays append-only:
+   * pending input is cancelled and one empty `system/message` replaces every
+   * surface node that stands for events after the cut, so the next request
+   * holds exactly the context from before that turn. Its `step` is 0, which no
+   * loop step uses, and its `turn` is the rewound turn: that pair marks the
+   * rewind for views. Context producers that reconcile against the surface
+   * re-inject what the replacement shadowed.
+   * @param request - Session identity and the turn to rewind before.
+   * @returns the replacement's sequence number.
+   */
+  async rewind(request: SessionRewindRequest): Promise<SessionRewindValue> {
+    const turn = request.beforeTurn
+    if (!Number.isSafeInteger(turn) || turn < 1) {
+      throw new RemoteError('gateway/bad-request', 'beforeTurn must be a positive safe integer', {})
+    }
+    const agent = await this.resolveAgent(request.sessionId)
+    const unavailable = (message: string): RemoteError<'session/rewind-unavailable'> =>
+      new RemoteError('session/rewind-unavailable', message, { sessionId: request.sessionId })
+    let observed: SessionObservation
+    try {
+      observed = await this.ctx.sessionQuery.observeSession(request.sessionId)
+    } catch (error) {
+      throw new RemoteError('gateway/internal', `rewind source unavailable for session "${request.sessionId}": ${String(error)}`, {})
+    }
+    using source = observed
+    if (agent.status !== 'idle') {
+      throw new RemoteError('session/agent-busy', 'rewind needs the agent to be idle', { reason: 'running' })
+    }
+    const events = source.events
+    const boundary = beforeTurnBoundary(events, turn)
+    if (boundary === 'missing') throw unavailable(`turn ${String(turn)} does not exist in session "${request.sessionId}"`)
+    // Unlike a fork, an in-place rewind before the first event keeps nothing: the cut precedes seq 0.
+    const cut = boundary === 'empty' ? -1 : boundary
+    const nodes = agent.session.surface.nodes
+    const origins = nodes.map(seq => surfaceOrigin(events, seq))
+    // Surface node 0 holds the system prompt, which only its own projection may rewrite; it is rendered again
+    // for every step, so it stays.
+    const head = events[nodes[0] ?? -1]?.type === 'system/message' ? 1 : 0
+    const first = origins.findIndex((origin, index) => index >= head && origin.hi > cut)
+    if (first === -1) throw unavailable(`nothing after turn ${String(turn)} is visible to the model`)
+    if (origins.slice(first).some(origin => origin.lo <= cut)) {
+      throw unavailable(`context after turn ${String(turn)} was compacted together with earlier context, so it cannot be cut there`)
+    }
+    const shadowed = nodes.slice(first)
+    // oxlint-disable-next-line typescript/no-non-null-assertion -- `first` indexes a non-empty suffix.
+    const end = shadowed.at(-1)!
+    if (agent.inbox.nextTurn.length > 0 || agent.inbox.nextStep.length > 0) agent.inbox.clear()
+    const replacement = agent.session.append('system/message', { turn, step: 0, message: createSystemMessage('') }, {
+      // oxlint-disable-next-line typescript/no-non-null-assertion -- `first` indexes a non-empty suffix.
+      surfaceOp: { op: 'replace', startSeq: shadowed[0]!, endSeq: end },
+      sourceEventSeqs: [...shadowed],
+    })
+    return { seq: replacement.seq }
   }
 
   /**
