@@ -14,7 +14,8 @@ import {
   type StoredEntry, type StoredFactory, type Translate,
 } from '@deepseek-ai/dsh-client-ui-slots'
 import {
-  HostContext, RootStandardProvider, ScopeBindingProvider, ScopeProvider,
+  AssemblyRecordProvider, HostContext, RootStandardProvider, ScopeBindingProvider, ScopeProvider,
+  useAssemblyRecord,
   keyedObservableHook, maybeObservableHook, observableHook, useHost, useRootBinding,
   useScopeBinding,
 } from './bindings.tsx'
@@ -1271,7 +1272,11 @@ function renderChainResult(
   )
 }
 
-/** Root outlet: the shell's single ctx-level render entry — an unregistered 'root' is a boot-order failure, never a silent blank. */
+/**
+ * Root outlet: the shell's single ctx-level render entry — an unregistered 'root' is a boot-order failure, never a silent blank.
+ * Once a registration has rendered in this mount, or on a remount, an empty roster means its owner is being replaced by a
+ * code reload, and the outlet renders nothing until the successor registers ({@link useAssemblyRecord}).
+ */
 function RootOutlet({ ownerProps }: { ownerProps: object }) {
   const host = useHost()
   useSyncExternalStore(
@@ -1279,14 +1284,17 @@ function RootOutlet({ ownerProps }: { ownerProps: object }) {
     () => host.getVersion('root'),
   )
   useLocaleRevision(host.locale)
+  const record = useAssemblyRecord()
   const entry = host.entriesOfSlot('root')[0]
   if (!entry) {
     // Registrations exist but every one abdicated: the shadowing collapse ran
     // dry, so the crash face replaces the tree (registered-but-broken is a
     // crash, not the boot-order assembly failure below).
     if (host.entriesOf('root').length > 0) return <div data-slot-error="root" />
+    if (record.assembled) return null
     throw new SlotAssemblyError("renderSlot('root') before any 'root' registration (boot order)")
   }
+  record.assembled = true
   // Same anchor contract as SlotOutlet: 'root' is a slot like any other, and
   // display:contents keeps the wrapper out of the shell's layout.
   return (
@@ -1320,11 +1328,13 @@ export function createSlotRenderer(): SlotRenderer {
     renderRoot(host, ownerProps) {
       return (
         <HostContext.Provider value={host}>
-          <RootStandardProvider>
-            <ScopeProvider scope="session-maybe">
-              <RootOutlet ownerProps={ownerProps} />
-            </ScopeProvider>
-          </RootStandardProvider>
+          <AssemblyRecordProvider>
+            <RootStandardProvider>
+              <ScopeProvider scope="session-maybe">
+                <RootOutlet ownerProps={ownerProps} />
+              </ScopeProvider>
+            </RootStandardProvider>
+          </AssemblyRecordProvider>
         </HostContext.Provider>
       )
     },

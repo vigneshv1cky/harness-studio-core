@@ -41,14 +41,14 @@ async function storedSession(draft: unknown) {
     await sessions.disposeScopes()
     await ctx.fiber.dispose()
   })
-  ctx.provide('sessions', sessions)
+  const withdrawSessions = ctx.provide('sessions', sessions)
   await sessions.add({ id })
   const reference = sessions.retain(id)
   onTestFinished(() => { reference.release() })
   await reference.ready
   const binding = reference.binding
   const hub = new InputHub(ctx, makeTranslate(zh, {}))
-  return { ctx, sessions, id, key, raw, reference, binding, hub }
+  return { ctx, sessions, withdrawSessions, id, key, raw, reference, binding, hub }
 }
 
 async function fixture(draft: unknown) {
@@ -268,6 +268,18 @@ it('subscribes when a provider arrives and disconnects each withdrawn provider',
   expect(b.shell.draftSnapshot).toBe(current)
   expect(b.sessions.binding(b.id)).toBe(b.binding)
   expect(b.shell.requestDraftInitialization({})).toBe('preserved')
+})
+
+it('reads a withdrawn sessions service as no trigger controller while the service is replaced', async () => {
+  const b = await storedSession(saved)
+  const source = catalog(['saved'])
+  const provider = b.ctx.plugin(TriggerProvider, { controller: controller(() => source.source) })
+  await provider.await()
+  const shell = b.hub.shellFor(b.binding)
+  b.withdrawSessions()
+  await vi.waitFor(() => { expect(b.ctx.get('sessions')).toBeUndefined() })
+  expect(() => { shell.refreshLexiconSubscription() }).not.toThrow()
+  expect(source.subscribers).toBe(0)
 })
 
 it('reconnects a replacement lexicon source on an explicit subscription refresh', async () => {

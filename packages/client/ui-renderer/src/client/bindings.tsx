@@ -1,10 +1,11 @@
 /** Internal React bindings for renderer hosts and standard-source scopes. */
-import { createContext, useContext, type ReactNode } from 'react'
+import { createContext, useContext, useRef, type ReactNode } from 'react'
 import type {
   HostObservable,
   KeyedStandardSource,
   MaybeSnapshotSelectorHook,
   SlotRendererHost,
+  SlotScopeAdapter,
   SnapshotSelectorHook,
   StandardSourceBinding,
 } from '@deepseek-ai/dsh-client-ui-slots'
@@ -22,6 +23,49 @@ export function useHost(): SlotRendererHost {
   const host = useContext(HostContext)
   if (host === null) throw new SlotAssemblyError('slot machinery rendered outside the installed renderer tree')
   return host
+}
+
+/**
+ * True when the tree is mounted into a container that already hosted an
+ * application, which happens only after the renderer itself was replaced by a
+ * code reload. The plugins that register the root entry and install the scope
+ * adapters are replaced in the same reload and may not have re-registered yet,
+ * so their absence is waited for instead of failing as a boot-order error.
+ */
+export const RemountContext = createContext(false)
+
+/** Mount-lifetime record of whether the application tree has rendered its root entry. */
+interface AssemblyRecord {
+  assembled: boolean
+}
+
+const AssemblyContext = createContext<AssemblyRecord | null>(null)
+
+/**
+ * Hold the assembly record above every provider that can unmount its subtree,
+ * so a scope provider waiting for its adapter does not discard it. A remount
+ * starts as assembled.
+ * @param props - provider inputs.
+ * @param props.children - application tree.
+ * @returns the record provider.
+ */
+export function AssemblyRecordProvider({ children }: { children: ReactNode }): ReactNode {
+  const remount = useContext(RemountContext)
+  const record = useRef<AssemblyRecord>({ assembled: remount })
+  return <AssemblyContext.Provider value={record.current}>{children}</AssemblyContext.Provider>
+}
+
+/**
+ * Read the mount's assembly record. Once the root entry has rendered (or on a
+ * remount), a missing root entry or scope adapter means its owner is being
+ * replaced by a code reload and is waited for; before that it is a boot-order
+ * failure.
+ * @returns the mutable assembly record.
+ */
+export function useAssemblyRecord(): AssemblyRecord {
+  const record = useContext(AssemblyContext)
+  if (record === null) throw new SlotAssemblyError('slot root rendered outside the assembly record provider')
+  return record
 }
 
 const RootBindingContext = createContext<StandardSourceBinding | null>(null)
@@ -184,7 +228,14 @@ export function RootStandardProvider({ children }: { children: ReactNode }) {
   return <RootBindingContext.Provider value={binding}>{children}</RootBindingContext.Provider>
 }
 
-/** Subscribe to the scope roster before resolving and binding its current adapter. */
+/**
+ * Subscribe to the scope roster before resolving and binding its current adapter.
+ * A missing adapter before the application first assembled is an assembly
+ * failure. Afterwards ({@link useAssemblyRecord}) it means its owner is being
+ * replaced (a code reload disposes the owner before its successor installs), so
+ * the subtree is unmounted until the next installation instead of failing the
+ * whole tree.
+ */
 export function ScopeProvider({
   scope,
   children,
@@ -194,8 +245,16 @@ export function ScopeProvider({
 }) {
   const host = useHost()
   observableHook(host.scopeRevision)(value => value)
+  const record = useAssemblyRecord()
   const adapter = host.scope(scope)
-  if (adapter === undefined) throw new SlotAssemblyError(`scope '${scope}' rendered without an installed adapter`)
+  if (adapter === undefined) {
+    if (record.assembled) return null
+    throw new SlotAssemblyError(`scope '${scope}' rendered without an installed adapter`)
+  }
+  return <ScopeAdapterProvider adapter={adapter}>{children}</ScopeAdapterProvider>
+}
+
+function ScopeAdapterProvider({ adapter, children }: { adapter: SlotScopeAdapter; children: ReactNode }) {
   const binding = observableHook(adapter.current)(value => value)
   return <ScopeBindingContext.Provider value={binding}>{children}</ScopeBindingContext.Provider>
 }

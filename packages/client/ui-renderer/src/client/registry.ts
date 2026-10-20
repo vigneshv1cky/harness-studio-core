@@ -377,9 +377,17 @@ export class SlotRegistry extends Service {
    * three guards are fail-loud boot-order checks, no fallback.
    * @param key - must be 'root' (runtime-enforced for dynamically composed callers).
    * @param owner - owner share for the root entry (the shell supplies {}).
+   * @param options - render options.
+   * @param options.awaitRegistration - skip the registration check because the
+   * caller renders a remount after the renderer was replaced, whose root outlet
+   * waits for the registration.
    * @returns the rendered root tree.
    */
-  renderSlot<K extends keyof SlotMap & string>(key: K, owner: OwnerOf<K>): ReturnType<SlotRenderer['renderRoot']> {
+  renderSlot<K extends keyof SlotMap & string>(
+    key: K,
+    owner: OwnerOf<K>,
+    options?: { readonly awaitRegistration?: boolean },
+  ): ReturnType<SlotRenderer['renderRoot']> {
     // Widened: in this package's own program SlotMap holds only 'root', which
     // would fold the guard to constant-false; the check exists for plain-JS
     // and cross-program callers where K is wider.
@@ -389,7 +397,7 @@ export class SlotRegistry extends Service {
     if (this._renderer === undefined) {
       throw new Error("slot renderer not installed — boot must call ctx.slots.install(createSlotRenderer()) before rendering 'root'")
     }
-    if (this._core.entries('root').length === 0) {
+    if (options?.awaitRegistration !== true && this._core.entries('root').length === 0) {
       throw new Error("'root' has no registration — a layout entry must register into 'root' before the shell renders it")
     }
     return this._renderer.renderRoot(this.hostFace(), owner)

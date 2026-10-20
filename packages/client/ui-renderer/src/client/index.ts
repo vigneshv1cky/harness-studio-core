@@ -23,7 +23,9 @@ export type {
 /** Mount operation exposed to the framework-free boot kernel. */
 export interface UiRendererService {
   /**
-   * Mount the assembled application into the supplied element.
+   * Mount the assembled application into the supplied element. A later mount
+   * into the same element (after this service was replaced) waits for the root
+   * registration and scope adapters instead of reporting them as missing.
    * @param container - Application mount point.
    * @returns Disposer that unmounts the React root.
    */
@@ -50,6 +52,9 @@ declare module '@deepseek-ai/cordis' {
 
 /** Services required before application assembly. */
 export const inject: string[] = []
+
+/** Container attribute recording that an application was mounted into it. */
+const MOUNTED_ATTRIBUTE = 'data-dsh-mounted'
 
 interface BootSnapshot {
   className: string
@@ -91,7 +96,10 @@ export function apply(ctx: Context): void {
   slots.install(createSlotRenderer())
   ctx.reflect.provide('uiRenderer', {
     mount: (container: HTMLElement): (() => void) => {
-      const root = mountApp(container, buildRenderApp({ ctx }))
+      // The marker lives on the container because a replaced renderer starts with fresh module state.
+      const remount = container.hasAttribute(MOUNTED_ATTRIBUTE)
+      container.setAttribute(MOUNTED_ATTRIBUTE, '')
+      const root = mountApp(container, buildRenderApp({ ctx, remount }))
       return () => { root.unmount() }
     },
   })

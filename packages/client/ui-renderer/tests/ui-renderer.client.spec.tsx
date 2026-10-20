@@ -94,6 +94,37 @@ describe('UI renderer plugin', () => {
     expect(el.querySelector('[data-testid="root-probe"]')).toBeNull()
   })
 
+  it('waits for the root entry and scope adapter when remounted into the same container', async () => {
+    const first = await bench()
+    const disposeRoot = first.slots.register({ name: 'root' }, () => <div data-testid="root-probe" />)
+    const el = container()
+    let unmount: () => void = () => {}
+    act(() => { unmount = first.ctx.get('uiRenderer')!.mount(el) })
+    act(() => { unmount() })
+    disposeRoot()
+    await stabilize(() => first.fiber.dispose())
+
+    const ctx = new Context()
+    const fiber = ctx.plugin({ inject: [...UiRenderer.inject], apply: UiRenderer.apply })
+    await fiber.await()
+    const slots = ctx.get('slots') as SlotRegistry
+    act(() => { mounted.push(ctx.get('uiRenderer')!.mount(el)) })
+    expect(el.textContent).toBe('')
+
+    const absent: StandardSourceBinding = { key: undefined, hooks: {}, keyedHooks: {}, props: {} }
+    const current = { getSnapshot: () => absent, subscribe: () => () => {} }
+    await stabilize(() => { slots.installScope('session', { current, bindingSource: () => current }) })
+    await stabilize(() => { slots.register({ name: 'root' }, () => <div data-testid="root-probe" />) })
+    expect(el.querySelector('[data-testid="root-probe"]')).toBeTruthy()
+  })
+
+  it('reports a missing root entry on a first mount', async () => {
+    const { ctx } = await bench()
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(() => { act(() => { mounted.push(ctx.get('uiRenderer')!.mount(container())) }) }).toThrow(/'root' has no registration/)
+    error.mockRestore()
+  })
+
   it('retracts the service and renderer with its fiber', async () => {
     const { ctx, slots, fiber } = await bench()
     await stabilize(() => fiber.dispose())

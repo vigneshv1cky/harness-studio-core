@@ -123,7 +123,7 @@ function makeHost() {
       : <>{children}</>,
   }
   const scopeRevision = observable(0)
-  let activeScopeAdapter = sessionAdapter
+  let activeScopeAdapter: SlotScopeAdapter | undefined = sessionAdapter
 
   const bump = (key: string) => {
     versions.set(key, (versions.get(key) ?? 0) + 1)
@@ -242,7 +242,7 @@ function makeHost() {
       if (source === undefined) throw new Error(`unknown test session: ${id}`)
       source.set(snapshot)
     },
-    replaceScope: (adapter: SlotScopeAdapter) => {
+    replaceScope: (adapter: SlotScopeAdapter | undefined) => {
       activeScopeAdapter = adapter
       scopeRevision.set(scopeRevision.getSnapshot() + 1)
     },
@@ -314,6 +314,29 @@ describe('root outlet', () => {
     expect(() => render(<>{createSlotRenderer().renderRoot(empty.host, {})}</>))
       .toThrow(/boot order/)
     spy.mockRestore()
+  })
+
+  it('renders nothing while a rendered root registration is replaced, then renders its successor', () => {
+    const h = makeHost()
+    const dispose = h.add('root', { component: () => <b>shell</b> })
+    const view = render(<>{createSlotRenderer().renderRoot(h.host, {})}</>)
+    act(() => { dispose() })
+    expect(view.container.textContent).toBe('')
+    act(() => { h.add('root', { component: () => <b>reloaded</b> }) })
+    expect(view.container.textContent).toBe('reloaded')
+  })
+
+  it('waits for the root registration when the scope adapter returns before it', () => {
+    const h = makeHost()
+    const dispose = h.add('root', { component: () => <b>shell</b> })
+    const view = render(<>{createSlotRenderer().renderRoot(h.host, {})}</>)
+    const adapter = h.host.scope('session')
+    act(() => { h.replaceScope(undefined) })
+    act(() => { dispose() })
+    act(() => { h.replaceScope(adapter) })
+    expect(view.container.textContent).toBe('')
+    act(() => { h.add('root', { component: () => <b>reloaded</b> }) })
+    expect(view.container.textContent).toBe('reloaded')
   })
 
   it('passes renderRoot owner props into the root component', () => {
@@ -1144,6 +1167,27 @@ describe('session-maybe adoption identity', () => {
     act(() => { h.current.set('s1') })
     act(() => { h.current.set('s1') })
     expect(view.container.textContent).toBe('s1#1')
+  })
+
+  it('fails loud when the scope adapter was never installed', () => {
+    const h = makeHost()
+    h.replaceScope(undefined)
+    h.add('root', { component: () => <b>shell</b> })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(() => render(<>{createSlotRenderer().renderRoot(h.host, {})}</>))
+      .toThrow(/without an installed adapter/)
+    spy.mockRestore()
+  })
+
+  it('keeps the tree mounted while the scope adapter is withdrawn and reinstalled', () => {
+    const h = makeHost()
+    const { view } = mountMaybeCounter(h)
+    expect(view.container.textContent).toBe('blank#1')
+    const original = h.host.scope('session')
+    act(() => { h.replaceScope(undefined) })
+    expect(view.container.textContent).toBe('')
+    act(() => { h.replaceScope(original) })
+    expect(view.container.textContent).toBe('blank#2')
   })
 
   it('rebinds mounted scope consumers when the installed adapter changes', () => {

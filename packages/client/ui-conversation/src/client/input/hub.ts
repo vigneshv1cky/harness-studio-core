@@ -350,14 +350,15 @@ export class InputHub implements SessionInputResolver {
     }
   }
 
+  // Editor callbacks reach these lookups while a code reload replaces the sessions service, so an absent service reads as no session.
   private controller(actx: Context): InputTriggerController | undefined {
-    if (this.sessions().sessionOf(actx) === undefined) return undefined
+    if (this.rootCtx.get('sessions')?.sessionOf(actx) === undefined) return undefined
     const inputTriggers = this.rootCtx.get('inputTriggers') as InputTriggerServiceFace | undefined
     return inputTriggers?.sessionOf(actx)
   }
 
   private popup(actx: Context): PopupDismissFace | undefined {
-    if (this.sessions().sessionOf(actx) === undefined) return undefined
+    if (this.rootCtx.get('sessions')?.sessionOf(actx) === undefined) return undefined
     const command = this.rootCtx.get('commandUi') as CommandFace | undefined
     return command?.popupFor(actx)
   }
