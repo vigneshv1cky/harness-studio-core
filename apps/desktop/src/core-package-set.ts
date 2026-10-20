@@ -19,6 +19,13 @@ export const DESKTOP_HOST_PACKAGE = '@deepseek-ai/dsh-desktop-host'
  */
 export const STUDIO_BUNDLED_PLUGINS = ['@harness-studio/devpreview', '@harness-studio/connectors', '@harness-studio/compact', '@harness-studio/sessions', '@harness-studio/remember', '@harness-studio/hooks', '@harness-studio/undo', '@harness-studio/watch', '@harness-studio/terminal', '@harness-studio/editor'] as const
 
+/**
+ * Harness bundles that Harness Studio switches on once: in a new Desktop profile, and in an existing profile the
+ * first time a Studio version that lists them starts. Unlike the Studio plugins they keep their switch on the
+ * Plugins page, and a bundle the person switched off stays off.
+ */
+export const STUDIO_DEFAULT_HARNESS_BUNDLES = ['@deepseek-ai/dsh-experimental-voice-input-bundle'] as const
+
 /** Package-relative Desktop Host files required before a profile can boot. */
 export const DESKTOP_HOST_RUNTIME_FILES = [
   'lib/index.js',

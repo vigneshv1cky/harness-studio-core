@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { resolveDesktopPaths } from '../src/paths.ts'
-import { DesktopProjectManager } from '../src/project-manager.ts'
-import { STUDIO_BUNDLED_PLUGINS } from '../src/core-package-set.ts'
+import { DesktopProjectManager, STUDIO_DEFAULTS_FILE } from '../src/project-manager.ts'
+import { STUDIO_BUNDLED_PLUGINS, STUDIO_DEFAULT_HARNESS_BUNDLES } from '../src/core-package-set.ts'
 import { readProfilePlugins } from '@deepseek-ai/dsh-app-boot'
 import { runtimeFixture } from './runtime-fixture.ts'
 
@@ -135,7 +135,7 @@ describe('desktop external plugin profile', () => {
     const bundles = () => (JSON.parse(readFileSync(path, 'utf8')) as { dsh: { profile: { bundles: string[] } } }).dsh.profile.bundles
     expect(bundles()).toEqual(expect.arrayContaining([...STUDIO_BUNDLED_PLUGINS, 'plugin']))
     // A profile made before Terminal and Editor shipped, with a plugin the person added.
-    const older = JSON.parse(readFileSync(path, 'utf8')) as { dependencies: Record<string, string>, dsh: { profile: { bundles: string[] } } }
+    const older = JSON.parse(readFileSync(path, 'utf8')) as { dependencies: Record<string, string>; dsh: { profile: { bundles: string[] } } }
     older.dsh.profile.bundles = older.dsh.profile.bundles.filter(name => name !== '@harness-studio/terminal' && name !== '@harness-studio/editor')
     writeFileSync(path, JSON.stringify(older))
     await manager.applyRelease()
@@ -153,6 +153,30 @@ describe('desktop external plugin profile', () => {
     writeFileSync(path, JSON.stringify(recovered))
     await manager.applyRelease()
     expect(bundles()).toEqual([...recovered.dsh.profile.bundles, ...STUDIO_BUNDLED_PLUGINS])
+  })
+
+  it('switches the default Harness bundles on once, in new and in existing profiles, and leaves them off after the person switches them off', async () => {
+    const { manager } = setup()
+    const path = join(manager.paths.profile, 'package.json')
+    const bundles = () => (JSON.parse(readFileSync(path, 'utf8')) as { dsh: { profile: { bundles: string[] } } }).dsh.profile.bundles
+    const write = (list: string[]) => {
+      const manifest = JSON.parse(readFileSync(path, 'utf8')) as { dsh: { profile: { bundles: string[] } } }
+      manifest.dsh.profile.bundles = list
+      writeFileSync(path, JSON.stringify(manifest))
+    }
+    await manager.applyRelease()
+    expect(bundles()).toEqual(expect.arrayContaining([...STUDIO_DEFAULT_HARNESS_BUNDLES]))
+    write(bundles().filter(name => !(STUDIO_DEFAULT_HARNESS_BUNDLES as readonly string[]).includes(name)))
+    await manager.applyRelease()
+    expect(bundles()).not.toEqual(expect.arrayContaining([...STUDIO_DEFAULT_HARNESS_BUNDLES]))
+    // A profile from a Studio version that had no defaults record gets each default once, after its own bundles.
+    rmSync(join(manager.paths.profile, STUDIO_DEFAULTS_FILE))
+    const own = bundles()
+    await manager.applyRelease()
+    expect(bundles()).toEqual([...own, ...STUDIO_DEFAULT_HARNESS_BUNDLES])
+    write(own)
+    await manager.applyRelease()
+    expect(bundles()).toEqual(own)
   })
 
   it('needs no runtime or package manifest when no plugins have been installed', async () => {

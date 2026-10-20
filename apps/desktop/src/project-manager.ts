@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import {
   DESKTOP_HOST_PACKAGE,
   STUDIO_BUNDLED_PLUGINS,
+  STUDIO_DEFAULT_HARNESS_BUNDLES,
   desktopCorePackageOverrides,
   verifyDesktopCorePackageSet,
 } from './core-package-set.ts'
@@ -31,6 +32,8 @@ const PROJECT_NAME = '@deepseek-ai/dsh-desktop-runtime'
 const DSH_PACKAGE = '@deepseek-ai/dsh'
 const CORE_BUILD_PACKAGE = '@deepseek-ai/dsh-subprocess-local'
 const WEB_PROFILE = PROFILE_TEMPLATES.web as ProfileTemplate
+/** Profile file naming the default Harness bundles already switched on once, so one the person switched off stays off. */
+export const STUDIO_DEFAULTS_FILE = '.harness-studio-defaults.json'
 const WORKSPACE_SETTINGS = 'nodeLinker: hoisted\nautoInstallPeers: false\n'
 function writeJson(path: string, value: unknown): void {
   writeFileSync(path, `${JSON.stringify(value, undefined, 2)}\n`, { mode: 0o600 })
@@ -175,14 +178,24 @@ export function createDevelopmentProjectMetadata(projectDir: string, release: De
 
 /** Create the first external plugin profile, with Harness Studio's bundled plugins enabled, without running a package manager. */
 export function createPluginProfile(projectDir: string): void {
-  initProfile(projectDir, [...WEB_PROFILE.bundles, ...STUDIO_BUNDLED_PLUGINS])
+  const created = !existsSync(join(projectDir, 'package.json'))
+  initProfile(projectDir, [...WEB_PROFILE.bundles, ...STUDIO_DEFAULT_HARNESS_BUNDLES, ...STUDIO_BUNDLED_PLUGINS])
+  if (created) writeJson(join(projectDir, STUDIO_DEFAULTS_FILE), { enabled: [...STUDIO_DEFAULT_HARNESS_BUNDLES] })
+}
+
+function defaultsEnabledOnce(projectDir: string): string[] {
+  try {
+    const saved = JSON.parse(readFileSync(join(projectDir, STUDIO_DEFAULTS_FILE), 'utf8')) as { enabled?: unknown }
+    return Array.isArray(saved.enabled) ? saved.enabled.filter((name): name is string => typeof name === 'string') : []
+  } catch (_error) { return [] /* A missing or unreadable record means no default was switched on yet. */ }
 }
 
 /**
  * Enable every Harness Studio built-in plugin in an existing profile: one created before a plugin was added
  * to the app (Terminal, Editor), or rewritten by an older recovery, gets the missing ones appended after its
  * own bundles, which keep their order. The built-ins load from the installation, so the profile's
- * dependencies stay as they are. A profile already listing them all is not rewritten.
+ * dependencies stay as they are. A profile already listing them all is not rewritten. Each of
+ * {@link STUDIO_DEFAULT_HARNESS_BUNDLES} is appended once, recorded in {@link STUDIO_DEFAULTS_FILE}, and never again.
  * @param projectDir - the Desktop profile directory.
  */
 export function ensureBundledPlugins(projectDir: string): void {
@@ -190,5 +203,11 @@ export function ensureBundledPlugins(projectDir: string): void {
   const manifest = readProfileManifest('dsh', projectDir)
   const bundles = manifest.dsh?.profile?.bundles ?? [...WEB_PROFILE.bundles]
   const missing = STUDIO_BUNDLED_PLUGINS.filter(name => !bundles.includes(name))
-  if (missing.length > 0 || manifest.dsh?.profile?.bundles === undefined) writeProfileBundles(projectDir, manifest, [...bundles, ...missing])
+  const enabledOnce = defaultsEnabledOnce(projectDir)
+  const newDefaults = STUDIO_DEFAULT_HARNESS_BUNDLES.filter(name => !enabledOnce.includes(name))
+  const defaults = newDefaults.filter(name => !bundles.includes(name))
+  if (missing.length > 0 || defaults.length > 0 || manifest.dsh?.profile?.bundles === undefined) {
+    writeProfileBundles(projectDir, manifest, [...bundles, ...defaults, ...missing])
+  }
+  if (newDefaults.length > 0) writeJson(join(projectDir, STUDIO_DEFAULTS_FILE), { enabled: [...enabledOnce, ...newDefaults] })
 }
