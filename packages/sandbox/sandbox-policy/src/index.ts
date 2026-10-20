@@ -67,19 +67,28 @@ export const NETWORK_MODES = ['on', 'off', 'allowlist'] as const
 export const SECRET_PATHS = [
   '~/.ssh', '~/.aws', '~/.config/gcloud', '~/.azure', '~/.kube', '~/.netrc', '~/.git-credentials', '~/.npmrc',
   '~/.docker/config.json', '~/.env',
+  // Harness Studio: database and data-warehouse logins. Snowflake keeps its connections in ~/.snowflake, or else
+  // in the platform's configuration folder (macOS, then Linux).
+  '~/.snowflake', '~/Library/Application Support/snowflake', '~/.config/snowflake', '~/.databrickscfg', '~/.databricks',
+  '~/.pgpass', '~/.pg_service.conf', '~/.my.cnf', '~/.mylogin.cnf',
 ] as const
 
 /**
- * Harness Studio: cloud command-line logins a person may expose to confined commands. Each is one of
- * {@link SECRET_PATHS}; exposing it makes the folder readable and writable to commands in `workspace-write`, so
- * the CLI runs as the person and can refresh its tokens. Everything else stays hidden.
+ * Harness Studio: command-line logins a person may expose to confined commands. Each path is one of
+ * {@link SECRET_PATHS}; exposing a login makes its paths readable, and those that are folders writable, to commands
+ * in `workspace-write`, so the CLI runs as the person and can refresh its tokens. A login kept in a single file
+ * (such as ~/.pgpass) becomes readable only. Everything else stays hidden.
  */
 export const CLOUD_LOGINS = {
-  gcloud: { path: '~/.config/gcloud', label: 'Google Cloud (gcloud)' },
-  aws: { path: '~/.aws', label: 'AWS (aws)' },
-  azure: { path: '~/.azure', label: 'Azure (az)' },
-  kubernetes: { path: '~/.kube', label: 'Kubernetes (kubectl)' },
-} as const
+  gcloud: { paths: ['~/.config/gcloud'], label: 'Google Cloud (gcloud)' },
+  aws: { paths: ['~/.aws'], label: 'AWS (aws)' },
+  azure: { paths: ['~/.azure'], label: 'Azure (az)' },
+  kubernetes: { paths: ['~/.kube'], label: 'Kubernetes (kubectl)' },
+  snowflake: { paths: ['~/.snowflake', '~/Library/Application Support/snowflake', '~/.config/snowflake'], label: 'Snowflake (snow, snowsql)' },
+  databricks: { paths: ['~/.databrickscfg', '~/.databricks'], label: 'Databricks (databricks)' },
+  postgres: { paths: ['~/.pgpass', '~/.pg_service.conf'], label: 'PostgreSQL (psql)' },
+  mysql: { paths: ['~/.my.cnf', '~/.mylogin.cnf'], label: 'MySQL (mysql)' },
+} as const satisfies Record<string, { paths: readonly string[]; label: string }>
 
 /** A cloud login {@link CLOUD_LOGINS} names. */
 export type CloudLogin = keyof typeof CLOUD_LOGINS
@@ -132,7 +141,7 @@ function renderSecretsContext(deny: SandboxReadDeny | undefined, escalatable: bo
 function renderCloudLoginsContext(logins: readonly CloudLogin[]): string {
   if (logins.length === 0) return ''
   const names = logins.map(login => CLOUD_LOGINS[login].label).join(', ')
-  return ` The user has made these cloud command-line logins available to commands: ${names}. Their CLIs run as the user without signing in again; the first such command in a session asks the user once.`
+  return ` The user has made these command-line logins available to commands: ${names}. Their CLIs run as the user without signing in again; the first such command in a session asks the user once.`
 }
 
 /** Host entries the allowlist accepts: a DNS name or IP address, optionally `*.` for subdomains. */
@@ -459,7 +468,7 @@ export class SandboxPolicyService extends Service {
     const logins = this.cloudLogins()
     if (logins.length === 0) return { readDeny }
     const home = homedir()
-    const exposed = logins.map(login => expandHome(CLOUD_LOGINS[login].path, home))
+    const exposed = logins.flatMap(login => CLOUD_LOGINS[login].paths.map(path => expandHome(path, home)))
     const writable = exposed.filter(path => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true)
     return {
       readDeny: { ...readDeny, paths: readDeny.paths.filter(path => !exposed.includes(path)) },

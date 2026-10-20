@@ -413,6 +413,34 @@ describe('secret protection', () => {
     expect(ctx.sandboxPolicy.resolve({ mode: 'danger-full-access' }).readDeny).toBeUndefined()
   })
 
+  it('hides database logins kept in single files and exposes them readable only', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-home-'))
+    const previous = process.env['HOME']
+    process.env['HOME'] = home
+    try {
+      writeFileSync(join(home, '.pgpass'), 'db:5432:*:me:secret\n')
+      writeFileSync(join(home, '.databrickscfg'), '[DEFAULT]\n')
+      mkdirSync(join(home, '.databricks'))
+      const file = join(home, 'cloud-logins.json')
+      const ctx = await withSecrets({ cloudLoginsFile: file })
+      for (const path of ['.pgpass', '.pg_service.conf', '.my.cnf', '.mylogin.cnf', '.databrickscfg', '.databricks', '.snowflake']) {
+        expect(ctx.sandboxPolicy.resolve().readDeny?.paths).toContain(join(home, path))
+      }
+      writeFileSync(file, JSON.stringify({ enabled: ['postgres', 'databricks'] }))
+      const policy = ctx.sandboxPolicy.resolve()
+      expect(policy.readDeny?.paths).not.toContain(join(home, '.pgpass'))
+      expect(policy.readDeny?.paths).not.toContain(join(home, '.pg_service.conf'))
+      expect(policy.readDeny?.paths).not.toContain(join(home, '.databrickscfg'))
+      expect(policy.readDeny?.paths).toContain(join(home, '.my.cnf'))
+      // Only existing folders become writable; single files stay read-only.
+      expect(policy.extraWritable).toEqual([join(home, '.databricks')])
+      expect(await policyContext(ctx, session('sess-db', '/p'))).toContain(`${CLOUD_LOGINS.databricks.label}, ${CLOUD_LOGINS.postgres.label}.`)
+    } finally {
+      process.env['HOME'] = previous
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it('exposes the cloud logins named in the cloud logins file: readable, and writable where the folder exists', async () => {
     const home = mkdtempSync(join(tmpdir(), 'dsh-home-'))
     const previous = process.env['HOME']
@@ -438,11 +466,11 @@ describe('secret protection', () => {
       expect(ctx.sandboxPolicy.cloudLogins()).toEqual([])
       writeFileSync(file, JSON.stringify({ enabled: 'aws' }))
       expect(ctx.sandboxPolicy.cloudLogins()).toEqual([])
-      expect(await policyContext(ctx, session('sess-cloud-off', '/p'))).not.toContain('cloud command-line logins')
+      expect(await policyContext(ctx, session('sess-cloud-off', '/p'))).not.toContain('command-line logins available')
       await expect(withSecrets({ cloudLoginsFile: 'relative.json' })).rejects.toThrow(/cloudLoginsFile must be an absolute path/)
       const unprotected = await withSecrets({ protectSecrets: false, cloudLoginsFile: file })
       writeFileSync(file, JSON.stringify({ enabled: ['gcloud'] }))
-      expect(await policyContext(unprotected, session('sess-cloud-open', '/p'))).not.toContain('cloud command-line logins')
+      expect(await policyContext(unprotected, session('sess-cloud-open', '/p'))).not.toContain('command-line logins available')
     } finally {
       process.env['HOME'] = previous
       rmSync(home, { recursive: true, force: true })
@@ -460,7 +488,7 @@ describe('secret protection', () => {
     const ctx = await withSecrets({})
     const target = session('sess-sec-on', '/p')
     const text = await policyContext(ctx, target)
-    expect(text).toContain('Secret files are hidden from commands and file tools: ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.azure, ~/.kube, ~/.netrc, ~/.git-credentials, ~/.npmrc, ~/.docker/config.json, ~/.env (except ~/.ssh/known_hosts, ~/.ssh/config), and .env files outside the workspace.')
+    expect(text).toContain('Secret files are hidden from commands and file tools: ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.azure, ~/.kube, ~/.netrc, ~/.git-credentials, ~/.npmrc, ~/.docker/config.json, ~/.env, ~/.snowflake, ~/Library/Application Support/snowflake, ~/.config/snowflake, ~/.databrickscfg, ~/.databricks, ~/.pgpass, ~/.pg_service.conf, ~/.my.cnf, ~/.mylogin.cnf (except ~/.ssh/known_hosts, ~/.ssh/config), and .env files outside the workspace.')
     expect(text).toContain('retried once with sandbox_permissions danger-full-access')
     ctx.sandboxPolicy.limit(() => ({ mode: 'read-only', reason: 'plan mode is on' }))
     const held = await policyContext(ctx, target)
@@ -473,7 +501,7 @@ describe('secret protection', () => {
 
   it('says dotenv files outside the workspace stay readable by commands where the backend masks only listed paths (bwrap)', async () => {
     const text = await policyContext(await withSecrets({}, 'listed'), session('sess-sec-bwrap', '/p'))
-    expect(text).toContain('Secret files are hidden from commands and file tools: ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.azure, ~/.kube, ~/.netrc, ~/.git-credentials, ~/.npmrc, ~/.docker/config.json, ~/.env (except ~/.ssh/known_hosts, ~/.ssh/config); commands see an empty folder or an empty file in their place.')
+    expect(text).toContain('Secret files are hidden from commands and file tools: ~/.ssh, ~/.aws, ~/.config/gcloud, ~/.azure, ~/.kube, ~/.netrc, ~/.git-credentials, ~/.npmrc, ~/.docker/config.json, ~/.env, ~/.snowflake, ~/Library/Application Support/snowflake, ~/.config/snowflake, ~/.databrickscfg, ~/.databricks, ~/.pgpass, ~/.pg_service.conf, ~/.my.cnf, ~/.mylogin.cnf (except ~/.ssh/known_hosts, ~/.ssh/config); commands see an empty folder or an empty file in their place.')
     expect(text).toContain('.env files outside the workspace are hidden from the file tools only: commands on this computer can still read them')
     expect(text).not.toContain('Operation not permitted')
     expect(text).toContain('retried once with sandbox_permissions danger-full-access')
