@@ -20,9 +20,12 @@ import type {
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { DraftInitializationOptions } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { HostObservable } from '@deepseek-ai/dsh-client-ui-slots'
 import type { RowToast } from './contract/slots.ts'
 import { pinOrderAccounts, pinOrderSource } from './pin-order.ts'
+import type { SessionParentRegistry } from './session-parents.ts'
 import type { WorkspaceViewStoreActions } from './stores.ts'
+import type { SessionParents } from './tree.ts'
 
 interface MainSelection {
   readonly sessionId?: SessionId
@@ -113,6 +116,17 @@ export interface UiWorkspace {
    */
   unpinSession(sessionId: SessionId): Promise<void>
   /**
+   * Nest Sessions under a parent row in the Workspace browser. The browser
+   * shows each child directly beneath its parent's row, in the parent's
+   * group, while both rows are visible and unarchived; otherwise the child
+   * stays an ordinary row. The links are display lineage only and change no
+   * Session's ownership. Call it inside an effect: the disposer removes the
+   * source.
+   * @param source - child-to-parent links; iteration order orders siblings.
+   * @returns the disposer that removes the source.
+   */
+  registerSessionParents(source: HostObservable<SessionParents>): () => void
+  /**
    * Open the Host-native directory picker.
    * @returns the selected directory, or null when cancelled.
    */
@@ -178,6 +192,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     private readonly sessions: ISessions,
     private readonly view: Pick<WorkspaceViewStoreActions, 'pinSessionOrder'>,
     private readonly notify: (toast: RowToast) => void,
+    private readonly sessionParents: SessionParentRegistry,
   ) {
     super(ctx, 'uiWorkspace')
     ctx.effect(() => {
@@ -391,6 +406,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   async unpinSession(sessionId: SessionId): Promise<void> {
     await this.workspaces.unpinSession(sessionId)
+  }
+
+  registerSessionParents(source: HostObservable<SessionParents>): () => void {
+    return this.sessionParents.register(source)
   }
 
   async pickDirectory(): Promise<string | null> {

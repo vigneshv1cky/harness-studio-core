@@ -110,6 +110,7 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
   const props: WorkspaceBrowserProps = {
     useShortcuts: select => select([]),
     useWorkspaceShortcuts: bindSnapshotSelector(controls.state),
+    useSessionParents: hook<ReadonlyMap<SessionId, SessionId>>(new Map()),
     requestSearch: controls.search,
     requestAddWorkspace: controls.add,
     closeAddWorkspace: controls.closeAdd,
@@ -2653,5 +2654,77 @@ describe('Workspace tree grouping', () => {
     fireEvent.dragEnd(alpha)
     expect(b.props.insertWorkspaceBefore).toHaveBeenCalledOnce()
     expect(b.props.insertWorkspaceBefore).toHaveBeenCalledWith(wid('alpha'), wid('gamma'))
+  })
+})
+
+describe('Nested Sessions', () => {
+  const links = (...pairs: [string, string][]) =>
+    hook<ReadonlyMap<SessionId, SessionId>>(new Map(pairs.map(([child, parent]) => [sid(child), sid(parent)])))
+  const sessions = [
+    summary('parent', 30), summary('first', 20, { running: true }), summary('second', 10), summary('mine', 5),
+  ]
+  const workspaces = [workspace('alpha', ['parent', 'second', 'mine']), workspace('worktree', ['first'])]
+  const row = (name: string) => screen.getByText(name).closest('[role="treeitem"]') as HTMLElement
+  const titles = () => screen.getAllByRole('treeitem')
+    .filter(item => item.getAttribute('aria-expanded') === null)
+    .map(item => item.querySelector('[class*="title"]')?.textContent)
+
+  it.each(['workspace', 'flat'] as const)('lists started Sessions under their parent in the %s view and folds them', (mode) => {
+    const b = mount({
+      useSessions: hook(sessionState(sessions)),
+      useWorkspaces: hook(workspaceState(workspaces)),
+      useSessionParents: links(['first', 'parent'], ['second', 'parent']),
+    })
+    act(() => {
+      b.store.actions.setGroupBy(mode)
+      b.store.actions.setGroupExpanded('alpha', true)
+      b.store.actions.setGroupExpanded('worktree', true)
+    })
+    expect(titles()).toEqual(['parent', 'first', 'second', 'mine'])
+    const nested = within(row('parent').closest('[role="tree"], [class*="list"]') as HTMLElement)
+      .getAllByRole('group').find(group => group.textContent?.includes('first'))
+    expect(nested?.textContent).not.toContain('mine')
+    expect(row('first').draggable).toBe(false)
+    expect(row('parent').draggable).toBe(true)
+    // The running child shows its status at the row's end and no update time.
+    expect(row('first').lastElementChild?.previousElementSibling?.querySelector('[data-state="ongoing"]')).not.toBeNull()
+    expect(within(row('second')).queryByText(/分钟|刚刚|天/u)).toBeNull()
+    fireEvent.click(within(row('parent')).getByRole('button', { name: '收起 parent 的子会话' }))
+    expect(titles()).toEqual(['parent', 'mine'])
+    expect(b.store.getSnapshot().foldedSessionIds).toEqual(['parent'])
+    fireEvent.click(within(row('parent')).getByRole('button', { name: '展开 parent 的子会话' }))
+    expect(titles()).toEqual(['parent', 'first', 'second', 'mine'])
+    expect(b.store.getSnapshot().foldedSessionIds).toEqual([])
+  })
+
+  it('shows a child whose parent is archived as an ordinary row in its own Workspace', () => {
+    const b = mount({
+      useSessions: hook(sessionState(sessions)),
+      useWorkspaces: hook(workspaceState(workspaces, [sid('parent')])),
+      useSessionParents: links(['first', 'parent'], ['second', 'parent']),
+    })
+    act(() => {
+      b.store.actions.setGroupExpanded('alpha', true)
+      b.store.actions.setGroupExpanded('worktree', true)
+    })
+    expect(titles()).toEqual(['second', 'mine', 'first'])
+    expect(screen.queryByRole('button', { name: /子会话/u })).toBeNull()
+  })
+
+  it('unfolds the parent once when a folded child becomes current', () => {
+    const b = mount({
+      useSessions: hook(sessionState(sessions)),
+      useWorkspaces: hook(workspaceState(workspaces)),
+      useSessionParents: links(['first', 'parent'], ['second', 'parent']),
+    })
+    act(() => {
+      b.store.actions.setGroupExpanded('alpha', true)
+      b.store.actions.setSessionChildrenExpanded('parent', false)
+    })
+    expect(titles()).toEqual(['parent', 'mine'])
+    rerender(b, { useSessions: hook(sessionState(sessions, { main: sid('second') })) })
+    expect(titles()).toEqual(['parent', 'first', 'second', 'mine'])
+    fireEvent.click(within(row('parent')).getByRole('button', { name: '收起 parent 的子会话' }))
+    expect(titles()).toEqual(['parent', 'mine'])
   })
 })

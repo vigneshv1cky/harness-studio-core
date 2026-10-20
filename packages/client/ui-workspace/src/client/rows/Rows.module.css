@@ -419,3 +419,59 @@
     transition: none;
   }
 }
+
+/* A row with nested Sessions: its leading cell swaps the status for the fold
+   chevron on hover, as a Workspace row swaps its folder; a folded row whose
+   cell holds nothing else keeps the chevron showing. */
+.childToggle {
+  display: none;
+  width: 16px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+}
+
+.sessionRow.hasChildren:hover .slot > :not(.childToggle) {
+  display: none;
+}
+
+.sessionRow.hasChildren:hover .childToggle,
+.sessionRow.childrenFolded .childToggle:only-child {
+  display: inline-flex;
+}
+
+/* Nested Sessions sit under their parent's title, past the parent's 16px
+   leading cell, with a 1px guide line centred under that cell. */
+.sessionChildren {
+  position: relative;
+  --dsh-session-nest-indent: calc(var(--dsh-workspace-indent, 0px) + 20px);
+}
+
+.sessionChildren::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: calc(8px + var(--dsh-workspace-indent, 0px) + 7.5px);
+  width: 1px;
+  background: var(--dsw-alias-border-l2);
+  pointer-events: none;
+}
+
+.sessionRow.nested {
+  height: 28px;
+  padding-inline-start: calc(8px + var(--dsh-session-nest-indent));
+}
+
+.sessionRow.nested .title {
+  margin-left: 0;
+}
+
+.trailingStatus {
+  margin-left: 2px;
+}
+
+.sessionRow.nested:hover .trailingStatus,
+.sessionRow.nested.menuOpen .trailingStatus {
+  display: none;
+}

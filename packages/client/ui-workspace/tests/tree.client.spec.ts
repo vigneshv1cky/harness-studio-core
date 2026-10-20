@@ -9,7 +9,8 @@ import type { SessionProjectionSnapshot } from '@deepseek-ai/dsh-api-session-con
 import {
   type ArchivedFilter,
   deriveFlat, deriveGroups, deriveSearchResults, orderByRecency, owningGroupKey, owningParentFolder,
-  pinCurrentBlank, reconcileManualOrder, sessionMemberIds, visibleSessionIds, workspaceLabel, UNGROUPED_KEY,
+  nestSessions, pinCurrentBlank, reconcileManualOrder, sessionMemberIds, sessionNestingRoots, visibleSessionIds,
+  workspaceLabel, UNGROUPED_KEY,
 } from '../src/client/tree.ts'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
 
@@ -884,4 +885,79 @@ it('leaves unnamed history titles empty for locale-owned row labels', () => {
   item.displayTitle = 'Default workspace'
   const sessions = list(item)
   expect(deriveFlat(sessions, [item.id], noRows, noAttention)[0]?.title).toBe('')
+})
+
+describe('Session nesting', () => {
+  const parents = (...links: [string, string][]): ReadonlyMap<SessionId, SessionId> =>
+    new Map(links.map(([child, parent]) => [sid(child), sid(parent)]))
+  const nesting = (links: ReadonlyMap<SessionId, SessionId>, collapsed: readonly string[] = []) => ({
+    parents: links, collapsed: new Set(collapsed.map(sid)),
+  })
+  const shape = (rows: readonly { id: SessionId; children?: readonly { id: SessionId }[]; childrenExpanded?: boolean }[]) =>
+    rows.map(row => row.children === undefined
+      ? row.id
+      : { id: row.id, children: row.children.map(child => child.id), expanded: row.childrenExpanded })
+
+  it('nests every descendant under its top-level row in registration order', () => {
+    const anchors = new Set(['root', 'a', 'b', 'a1', 'other'].map(sid))
+    expect(nestSessions(anchors, parents(['a', 'root'], ['b', 'root'], ['a1', 'a'])))
+      .toEqual(new Map([[sid('root'), [sid('a'), sid('a1'), sid('b')]]]))
+  })
+
+  it('keeps children of absent parents and members of parent cycles as ordinary rows', () => {
+    const anchors = new Set(['x', 'y', 'z', 'orphan', 'self'].map(sid))
+    expect(nestSessions(anchors, parents(['x', 'y'], ['y', 'x'], ['z', 'x'], ['orphan', 'gone'], ['self', 'self'])))
+      .toEqual(new Map())
+  })
+
+  it('moves children from their own Workspace into the parent row of the parent group', () => {
+    const sessions = list(
+      summary('parent', 10), summary('first', 30), summary('second', 20), summary('mine', 5), summary('loose', 1),
+    )
+    const groups = deriveGroups(
+      sessions,
+      [workspace('main', ['parent', 'mine']), workspace('worktree', ['first'])],
+      noRows,
+      noAttention,
+      { ...view(['main', 'worktree', UNGROUPED_KEY]), nesting: nesting(parents(['first', 'parent'], ['second', 'parent'])) },
+    )
+    expect(groups.map(group => [group.key, shape(group.sessions)])).toEqual([
+      ['main', [{ id: sid('parent'), children: [sid('first'), sid('second')], expanded: true }, sid('mine')]],
+      ['worktree', []],
+      [UNGROUPED_KEY, [sid('loose')]],
+    ])
+  })
+
+  it('shows a child as an ordinary row once its parent is archived', () => {
+    const sessions = list(summary('parent', 10), summary('child', 20))
+    const links = parents(['child', 'parent'])
+    for (const archivedFilter of ['default', 'show'] as const) {
+      const rows = deriveFlat(
+        sessions, sessions.ids, rowState({ archived: ['parent'], archivedFilter }), noAttention, nesting(links),
+      )
+      expect(shape(rows)).toEqual(archivedFilter === 'show' ? [sid('parent'), sid('child')] : [sid('child')])
+    }
+  })
+
+  it('reports folded rows and keeps subagent children hidden', () => {
+    const sessions = list(
+      summary('parent', 10), summary('child', 20), { ...summary('helper', 30), origin: 'subagent', parentId: sid('parent') },
+    )
+    const rows = deriveFlat(
+      sessions, sessions.ids, noRows, noAttention, nesting(parents(['child', 'parent'], ['helper', 'parent']), ['parent']),
+    )
+    expect(shape(rows)).toEqual([{ id: sid('parent'), children: [sid('child')], expanded: false }])
+  })
+
+  it('tints the parent group when a nested child is current', () => {
+    const sessions = withMain(list(summary('parent', 10), summary('child', 20)), sid('child'))
+    const links = parents(['child', 'parent'])
+    const groups = deriveGroups(
+      sessions, [workspace('main', ['parent']), workspace('worktree', ['child'])], noRows, noAttention,
+      { ...view(['main', 'worktree']), nesting: nesting(links) },
+    )
+    expect(groups.map(group => [group.key, group.containsCurrent])).toEqual([['main', true], ['worktree', false]])
+    expect(sessionNestingRoots(sessions, noRows, links)).toEqual(new Map([[sid('child'), sid('parent')]]))
+    expect(sessionNestingRoots(sessions, noRows, new Map())).toEqual(new Map())
+  })
 })

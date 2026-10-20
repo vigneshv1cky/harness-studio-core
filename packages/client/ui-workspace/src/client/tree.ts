@@ -59,7 +59,22 @@ export interface SessionNode {
   /** In the registry-global archive set: shown grayed in place and not openable. */
   archived: boolean
   updatedAt: number
+  /**
+   * Sessions nested under this row through a registered presentation parent:
+   * every descendant, depth first in registration order, at one indent level.
+   * Present only on a top-level row that has nested Sessions.
+   */
+  children?: readonly SessionNode[]
+  /** Whether the nested rows show; present with {@link children}. */
+  childrenExpanded?: boolean
 }
+
+/**
+ * Presentation parent of each Session that renders nested under another row,
+ * keyed by child; iteration order orders siblings. This is browser display
+ * lineage only: it is independent of fork lineage and subagent ownership.
+ */
+export type SessionParents = ReadonlyMap<SessionId, SessionId>
 
 /** Session order selected by the Workspace browser. */
 export type SessionOrderBy = 'manual' | 'updated'
@@ -111,6 +126,15 @@ export interface TreeView {
   expandedGroups: readonly string[]
   /** Browser-local order for Sessions without a backing Workspace account. */
   ungroupedOrder?: readonly string[]
+  /** Nesting applied to the rows; absent renders every Session as a top-level row. */
+  nesting?: SessionNesting
+}
+
+/** Registered presentation parents plus the rows whose nested Sessions are folded. */
+export interface SessionNesting {
+  parents: SessionParents
+  /** Top-level rows whose nested Sessions the user folded. */
+  collapsed: ReadonlySet<SessionId>
 }
 
 interface Group {
@@ -256,6 +280,85 @@ function sessionVisible(
   }
 }
 
+/**
+ * Resolve where nested Sessions render. A Session nests when it and its
+ * registered parent are both nesting anchors (visible, unarchived, non-blank
+ * rows); every descendant of a top-level row nests directly under that row,
+ * so a child whose parent is archived, hidden, or gone stays an ordinary row
+ * in its own group. Members of a parent cycle stay ordinary rows.
+ * @param anchors - Sessions eligible to nest or to hold nested Sessions.
+ * @param parents - registered presentation parents keyed by child.
+ * @returns nested descendants per top-level row, depth first in registration order.
+ */
+export function nestSessions(
+  anchors: ReadonlySet<SessionId>,
+  parents: SessionParents,
+): Map<SessionId, SessionId[]> {
+  const childrenOf = new Map<SessionId, SessionId[]>()
+  const nested = new Set<SessionId>()
+  for (const [child, parent] of parents) {
+    if (child === parent || !anchors.has(child) || !anchors.has(parent)) continue
+    nested.add(child)
+    const siblings = childrenOf.get(parent)
+    if (siblings === undefined) childrenOf.set(parent, [child])
+    else siblings.push(child)
+  }
+  const descendants = new Map<SessionId, SessionId[]>()
+  for (const root of childrenOf.keys()) {
+    if (nested.has(root)) continue
+    const rows: SessionId[] = []
+    const visit = (id: SessionId): void => {
+      for (const child of childrenOf.get(id) ?? []) {
+        rows.push(child)
+        visit(child)
+      }
+    }
+    visit(root)
+    descendants.set(root, rows)
+  }
+  return descendants
+}
+
+/** Nested Session ids mapped to the top-level row they render under. */
+function nestedRoots(descendants: ReadonlyMap<SessionId, readonly SessionId[]>): Map<SessionId, SessionId> {
+  const roots = new Map<SessionId, SessionId>()
+  for (const [root, rows] of descendants) for (const id of rows) roots.set(id, root)
+  return roots
+}
+
+/** Visible, unarchived, non-blank Sessions: the rows that can nest or hold nested Sessions. */
+function nestingAnchors(
+  list: SessionListState,
+  current: SessionId | undefined,
+  archived: ReadonlySet<SessionId>,
+  archivedFilter: ArchivedFilter,
+): Set<SessionId> {
+  const anchors = new Set<SessionId>()
+  for (const id of list.ids) {
+    const session = list.byId[id]
+    if (session === undefined || session.blank || archived.has(id)) continue
+    if (sessionVisible(session, current, archived, archivedFilter)) anchors.add(id)
+  }
+  return anchors
+}
+
+/**
+ * Locate the top-level row each nested Session renders under.
+ * @param list - sessions list snapshot.
+ * @param rowState - registry-global archive set plus the archived filter.
+ * @param parents - registered presentation parents keyed by child.
+ * @returns the owning top-level row by nested Session id; ordinary rows are absent.
+ */
+export function sessionNestingRoots(
+  list: SessionListState,
+  rowState: Pick<SessionRowState, 'archivedSessionIds' | 'archivedFilter'>,
+  parents: SessionParents,
+): Map<SessionId, SessionId> {
+  if (parents.size === 0) return new Map()
+  const anchors = nestingAnchors(list, mainSessionId(list), new Set(rowState.archivedSessionIds), rowState.archivedFilter)
+  return nestedRoots(nestSessions(anchors, parents))
+}
+
 /** Registry-global row state consumed by every tree derivation. */
 export interface SessionRowState {
   /** Registry-global pin ids; pinned rows lead their section in the local order. */
@@ -296,7 +399,7 @@ function sessionTitle(session: SessionSummary): string {
   return session.blank ? '' : (session.title?.trim() ?? '')
 }
 
-/** Build one group without projecting session lineage into presentation. */
+/** Build one group; nested Sessions were already removed from its members. */
 function buildGroup(
   key: string,
   workspaceId: WorkspaceId | undefined,
@@ -337,6 +440,7 @@ function groupByWorkspace(
   archived: ReadonlySet<SessionId>,
   archivedFilter: ArchivedFilter,
   ungroupedOrder: readonly string[] | undefined,
+  nested: ReadonlyMap<SessionId, SessionId>,
 ): Group[] {
   const current = mainSessionId(list)
   const groups: Group[] = []
@@ -347,7 +451,7 @@ function groupByWorkspace(
       const summary = list.byId[id]
       if (summary === undefined) continue // account may lead the list pull; the row appears when the summary lands
       accounted.add(id)
-      if (!sessionVisible(summary, current, archived, archivedFilter)) continue
+      if (nested.has(id) || !sessionVisible(summary, current, archived, archivedFilter)) continue
       members.push(summary)
     }
     // The archived-only view lists archives, not the Workspace inventory, so
@@ -361,7 +465,8 @@ function groupByWorkspace(
   const stray = list.ids
     .map(id => list.byId[id])
     .filter((s): s is SessionSummary =>
-      s !== undefined && !accounted.has(s.id) && sessionVisible(s, current, archived, archivedFilter))
+      s !== undefined && !accounted.has(s.id) && !nested.has(s.id)
+      && sessionVisible(s, current, archived, archivedFilter))
   if (stray.length > 0) {
     groups.push(buildGroup(
       UNGROUPED_KEY,
@@ -400,9 +505,17 @@ function sessionNode(
   statuses: SessionStatuses,
   pinned: ReadonlySet<SessionId>,
   archived: ReadonlySet<SessionId>,
+  nesting?: NestedRows,
 ): SessionNode {
   const status = statuses.get(s.id)
   const pendingInteraction = visiblePendingKind(status?.pendingInteraction?.kind)
+  const childIds = nesting?.descendants.get(s.id)
+  const folded = nesting?.collapsed.has(s.id) === true
+  const children = childIds?.flatMap((id) => {
+    const child = list.byId[id]
+    /* v8 ignore next -- nested ids are anchors drawn from the same list snapshot. */
+    return child === undefined ? [] : [sessionNode(child, list, statuses, pinned, archived)]
+  })
   return {
     id: s.id,
     title: sessionTitle(s),
@@ -414,11 +527,35 @@ function sessionNode(
     archived: archived.has(s.id),
     updatedAt: s.updatedAt,
     ...(pendingInteraction === undefined ? {} : { pendingInteraction }),
+    ...(children === undefined || children.length === 0
+      ? {}
+      : { children, childrenExpanded: !folded }),
   }
 }
 
+/** Nesting resolved against one list snapshot. */
+interface NestedRows {
+  descendants: ReadonlyMap<SessionId, readonly SessionId[]>
+  /** Nested Session ids mapped to their top-level row. */
+  roots: ReadonlyMap<SessionId, SessionId>
+  collapsed: ReadonlySet<SessionId>
+}
+
+function resolveNesting(
+  list: SessionListState,
+  archived: ReadonlySet<SessionId>,
+  archivedFilter: ArchivedFilter,
+  nesting: SessionNesting | undefined,
+): NestedRows | undefined {
+  if (nesting === undefined || nesting.parents.size === 0) return undefined
+  const descendants = nestSessions(nestingAnchors(list, mainSessionId(list), archived, archivedFilter), nesting.parents)
+  return { descendants, roots: nestedRoots(descendants), collapsed: nesting.collapsed }
+}
+
 /**
- * Derive the workspace browser groups with every session as a top-level row.
+ * Derive the workspace browser groups. Sessions are top-level rows except
+ * those the view's nesting places under another row, which render in that
+ * row's group whichever Workspace owns them.
  *
  * Every group shows, except that the archived-only filter drops groups
  * without visible members; sessions populate under expanded groups with
@@ -430,7 +567,7 @@ function sessionNode(
  * @param workspaces - real Workspaces in Host group order with caller-projected Session order.
  * @param rowState - registry-global pin and archive sets plus the archived filter.
  * @param statuses - unified UI status by Session.
- * @param view - local expansion arrays.
+ * @param view - local expansion arrays and the optional Session nesting.
  * @returns group sections in render order.
  */
 export function deriveGroups(
@@ -444,11 +581,13 @@ export function deriveGroups(
   const pinned = new Set(rowState.pinnedSessionIds)
   const expandedGroups = new Set(view.expandedGroups)
   const current = mainSessionId(list)
+  const nesting = resolveNesting(list, archived, rowState.archivedFilter, view.nesting)
+  const nested = nesting?.roots ?? new Map<SessionId, SessionId>()
   const currentGroup = current === undefined
     ? undefined
-    : owningGroupKey(workspaces, current)
+    : owningGroupKey(workspaces, nested.get(current) ?? current)
   const groups: GroupNode[] = []
-  for (const g of groupByWorkspace(list, workspaces, archived, rowState.archivedFilter, view.ungroupedOrder)) {
+  for (const g of groupByWorkspace(list, workspaces, archived, rowState.archivedFilter, view.ungroupedOrder, nested)) {
     const expanded = expandedGroups.has(g.key)
     groups.push({
       key: g.key,
@@ -461,7 +600,7 @@ export function deriveGroups(
       containsCurrent: g.key === currentGroup,
       sessions: expanded
         ? sectionMembers(g.sessions, pinned, archived)
-          .map(session => sessionNode(session, list, statuses, pinned, archived))
+          .map(session => sessionNode(session, list, statuses, pinned, archived, nesting))
         : [],
     })
   }
@@ -504,6 +643,7 @@ export function visibleSessionIds(
  * @param sessionIds - complete account members in the selected order, including hidden archives.
  * @param rowState - registry-global pin and archive sets plus the archived filter.
  * @param statuses - unified UI status by Session.
+ * @param nesting - optional registered presentation parents and folded rows.
  * @returns flat rows in sectioned order with current status indicators.
  */
 export function deriveFlat(
@@ -511,18 +651,21 @@ export function deriveFlat(
   sessionIds: readonly SessionId[],
   rowState: SessionRowState,
   statuses: SessionStatuses,
+  nesting?: SessionNesting,
 ): SessionNode[] {
   const archived = new Set(rowState.archivedSessionIds)
   const pinned = new Set(rowState.pinnedSessionIds)
   const current = mainSessionId(list)
+  const nested = resolveNesting(list, archived, rowState.archivedFilter, nesting)
   const members = sessionIds.flatMap((id) => {
     const session = list.byId[id]
-    return session !== undefined && sessionVisible(session, current, archived, rowState.archivedFilter)
+    return session !== undefined && nested?.roots.has(id) !== true
+      && sessionVisible(session, current, archived, rowState.archivedFilter)
       ? [session]
       : []
   })
   return sectionMembers(members, pinned, archived)
-    .map(session => sessionNode(session, list, statuses, pinned, archived))
+    .map(session => sessionNode(session, list, statuses, pinned, archived, nested))
 }
 
 /**

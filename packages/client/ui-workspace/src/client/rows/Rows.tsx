@@ -11,7 +11,7 @@
  * session and workspace hover cards are suppressed while a menu is open.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { RefObject } from 'react'
+import type { ReactNode, RefObject } from 'react'
 import clsx from 'clsx'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import {
@@ -539,11 +539,15 @@ export function SearchResultItem({ result, currentId, onOpen, onUnarchive, t }: 
  * its leading decoration, and its hover-card section.
  * @param props.onReveal - scroll this row into view after search navigation, then acknowledge it.
  * @param props.drag - optional row-drag target wiring; blank rows cannot start a drag.
+ * @param props.nested - render as a nested row under its parent: title, then
+ * the status dot on the right in place of the time; nested rows never drag.
+ * @param props.onToggleChildren - fold or unfold the row's nested Sessions;
+ * present on a row that has them, whose leading cell then offers the toggle.
  * @param props.t - the browser root's locale seat.
  * @returns the session row.
  */
 export function SessionNodeItem({
-  node, currentId, now, onOpen, onRenameRequest, renderSlot, onReveal, drag, t,
+  node, currentId, now, onOpen, onRenameRequest, renderSlot, onReveal, drag, nested = false, onToggleChildren, t,
 }: {
   node: SessionNode
   currentId: string | undefined
@@ -555,6 +559,10 @@ export function SessionNodeItem({
   onReveal?: (() => void) | undefined
   /** Present on reorderable-list rows so every row can remain a drop target. */
   drag?: RowDragProps | undefined
+  /** Render as a nested row under its parent. */
+  nested?: boolean
+  /** Fold or unfold this row's nested Sessions. */
+  onToggleChildren?: (() => void) | undefined
   t: RowTranslate
 } & PropsRenderSlots<
   | 'sidebar.workspaces.session.menu.item'
@@ -571,7 +579,8 @@ export function SessionNodeItem({
   // Archived rows hold their in-place grayed slot, so manual reorder cannot
   // move them. Pinned rows drag within the pinned block: the browser gates
   // their drop targets to fellow pinned rows.
-  const draggable = drag !== undefined && !row.blank && !row.archived
+  const draggable = drag !== undefined && !nested && !row.blank && !row.archived
+  const childrenShown = row.childrenExpanded !== false
   const [menuOpen, setMenuOpen] = useState(false)
   // The menu's open state, bound into the row entries' `useMenuOpenState` hook.
   const menuOpenState = useMemo((): MenuOpenState => [menuOpen, setMenuOpen], [menuOpen])
@@ -590,7 +599,8 @@ export function SessionNodeItem({
       data-row-key={`session:${node.id}`}
       className={clsx(
         css.sessionRow, selected && css.selected, menuOpen && css.menuOpen,
-        row.archived && css.archived,
+        row.archived && css.archived, nested && css.nested,
+        onToggleChildren !== undefined && css.hasChildren, onToggleChildren !== undefined && !childrenShown && css.childrenFolded,
         drag?.marker === 'before' && css.dropBefore, drag?.marker === 'after' && css.dropAfter,
       )}
       role="treeitem"
@@ -629,11 +639,27 @@ export function SessionNodeItem({
           and is cleared by opening the session. Archived rows keep the slot
           blank — the grayed row carries the archived look — and their live
           status stays on the hover card only. */}
-      <span className={css.slot}>
-        {!row.archived && !row.blank && (showStatus
-          ? <SessionStatusDots statuses={statuses} />
-          : renderSlot('sidebar.session.row.leading', { sessionId: node.id }))}
-      </span>
+      {!nested && (
+        <span className={css.slot}>
+          {!row.archived && !row.blank && (showStatus
+            ? <SessionStatusDots statuses={statuses} />
+            : renderSlot('sidebar.session.row.leading', { sessionId: node.id }))}
+          {/* Swaps in for the status on hover, like a Workspace row's
+              chevron, and stays visible on a folded row with nothing else
+              in its cell. */}
+          {onToggleChildren !== undefined && (
+            <button
+              type="button"
+              className={clsx(css.iconButton, css.childToggle)}
+              aria-expanded={childrenShown}
+              aria-label={t(childrenShown ? 'row.children.hide' : 'row.children.show', { name: title })}
+              onClick={(e) => { e.stopPropagation(); onToggleChildren() }}
+            >
+              <IconTriangleRightFillRegular className={clsx(css.arrow, css.chevron, childrenShown && css.arrowOpen)} />
+            </button>
+          )}
+        </span>
+      )}
       <span
         ref={titleRef}
         className={css.title}
@@ -647,12 +673,17 @@ export function SessionNodeItem({
           happened in it yet, so a "now" timestamp and the row verbs
           (rename/fork/archive) would all act on content that does not
           exist — both trailing cells stay off until the first prompt. */}
-      {!row.blank && (
+      {!row.blank && !nested && (
         <span
           className={css.time}
           aria-hidden={primaryStatus.trailingLabel === undefined ? undefined : true}
         >
           {primaryStatus.trailingLabel ?? timeLabel(row.updatedAt, now, t)}
+        </span>
+      )}
+      {nested && !row.archived && showStatus && (
+        <span className={clsx(css.slot, css.trailingStatus)}>
+          <SessionStatusDots statuses={statuses} />
         </span>
       )}
       {/* Trails the time so the marker occupies the same right-edge cell as
@@ -702,4 +733,14 @@ export function SessionNodeItem({
       copiedLabel={t('hover.copied')}
     />
   )
+}
+
+/**
+ * The nested rows beneath a parent row, drawn indented past the parent's
+ * leading cell with a thin guide line down their left side.
+ * @param props.children - the nested Session rows.
+ * @returns the nested-row group.
+ */
+export function SessionChildren({ children }: { children: ReactNode }) {
+  return <div className={css.sessionChildren} role="group">{children}</div>
 }

@@ -53,6 +53,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ShortcutCatalogEntry } from '@deepseek-ai/dsh-client-shortcuts/client'
 import type { WorkspaceShortcutState } from '../shortcuts.ts'
 import type { StartSessionOptions } from '../navigation.ts'
+import type { SessionParents } from '../tree.ts'
 import type {} from './toast.ts'
 import type { createWorkspaceViewStore } from '../stores.ts'
 
@@ -228,6 +229,8 @@ export type WorkspaceBrowserInjected = {
     hostInfo: HostObservable<RemoteHostFacts>
     workspaceShortcuts: HostObservable<WorkspaceShortcutState>
     shortcuts: HostObservable<readonly ShortcutCatalogEntry[]>
+    /** Merged presentation parents registered through `uiWorkspace.registerSessionParents`. */
+    sessionParents: HostObservable<SessionParents>
   }
   /** Open the browser search and focus its input. */
   requestSearch: () => void

@@ -14,7 +14,7 @@
  * are slot entries with their own behavior, so this component threads no
  * action callbacks and hosts no action surface.
  */
-import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import clsx from 'clsx'
 import {
   Button, HoverCardGroup, IconArchiveCheckOutlineRegular, IconArchiveOffOutlineRegular, IconArchiveOutlineRegular,
@@ -31,12 +31,14 @@ import { workspaceDisplayTitle } from '@deepseek-ai/dsh-api-workspace-controller
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspaceBrowserProps } from '../contract/slots.ts'
-import type { ArchivedFilter, GroupNode, SessionNode, SessionOrderBy, SessionRowState } from '../tree.ts'
+import type {
+  ArchivedFilter, GroupNode, SessionNesting, SessionNode, SessionOrderBy, SessionRowState,
+} from '../tree.ts'
 import {
   deriveFlat, deriveGroups, deriveSearchResults, orderByRecency, owningGroupKey, owningParentFolder,
-  pinCurrentBlank, reconcileManualOrder, sessionMemberIds, UNGROUPED_KEY,
+  pinCurrentBlank, reconcileManualOrder, sessionMemberIds, sessionNestingRoots, UNGROUPED_KEY,
 } from '../tree.ts'
-import { ProjectRowItem, SearchResultItem, SessionNodeItem } from './Rows.tsx'
+import { ProjectRowItem, SearchResultItem, SessionChildren, SessionNodeItem } from './Rows.tsx'
 import { AnimatedRows } from './AnimatedRows.tsx'
 import { FLAT_SESSION_ORDER_KEY, type SessionGroupBy } from '../stores.ts'
 import { WorkspacePickFlow } from '../WorkspacePicker.tsx'
@@ -84,13 +86,46 @@ function requiredWatermark(
   for (const session of sessions) {
     if (session.blank) continue
     index += 1
-    const attention = index <= SESSION_WATERMARK_AUTO_MAX && (
-      session.running || session.runningSubagentCount > 0 || session.pendingInteraction !== undefined
-      || session.completed || session.id === current
-    )
-    if (attention || session.id === revealSessionId) required = index
+    const rows = [session, ...session.children ?? []]
+    const attention = index <= SESSION_WATERMARK_AUTO_MAX && rows.some(row =>
+      row.running || row.runningSubagentCount > 0 || row.pendingInteraction !== undefined
+      || row.completed || row.id === current)
+    if (attention || rows.some(row => row.id === revealSessionId)) required = index
   }
   return required
+}
+
+/** Row keys of a row and its shown nested rows, in DOM order. */
+function nodeRowKeys(node: SessionNode): string[] {
+  const keys = [`session:${node.id}`]
+  if (node.childrenExpanded === true) for (const child of node.children ?? []) keys.push(`session:${child.id}`)
+  return keys
+}
+
+/** Nesting props shared by the grouped tree and the flat list. */
+interface NestingProps {
+  /** Registered presentation parents plus folded rows. */
+  nesting: SessionNesting
+  /** Persist one row's nested-Session fold. */
+  setSessionChildrenExpanded: (sessionId: string, expanded: boolean) => void
+}
+
+/**
+ * Unfold the row holding a nested Session when that Session becomes current
+ * or is revealed from search, once per Session, so a later manual fold holds.
+ */
+function useUnfoldFor(
+  sessionId: SessionId | undefined,
+  roots: ReadonlyMap<SessionId, SessionId>,
+  { nesting, setSessionChildrenExpanded }: NestingProps,
+): void {
+  const handled = useRef<SessionId | undefined>(undefined)
+  const root = sessionId === undefined ? undefined : roots.get(sessionId)
+  useEffect(() => {
+    if (sessionId === undefined || root === undefined || handled.current === sessionId) return
+    handled.current = sessionId
+    if (nesting.collapsed.has(root)) setSessionChildrenExpanded(root, true)
+  }, [nesting.collapsed, root, sessionId, setSessionChildrenExpanded])
 }
 
 /** Raise each listed group's watermark to its requirement; returns `marks` itself when nothing rises. */
@@ -295,6 +330,36 @@ type SessionTreeProps = Pick<
   revealSessionId?: SessionId | undefined
   /** Acknowledge that the chosen Session row has been revealed. */
   onSessionRevealed: (sessionId: SessionId) => void
+} & NestingProps
+
+/**
+ * The nested rows under one parent row, when shown. Nested rows open,
+ * reveal, and carry the row actions like any row, but never drag.
+ */
+function NestedRows({ node, currentId, now, open, onSessionRenameRequest, renderSlot, revealSessionId, onSessionRevealed, t }: {
+  node: SessionNode
+  currentId: SessionId | undefined
+  now: number
+} & Pick<SessionTreeProps, 'open' | 'onSessionRenameRequest' | 'renderSlot' | 'revealSessionId' | 'onSessionRevealed' | 't'>) {
+  if (node.childrenExpanded !== true || node.children === undefined) return null
+  return (
+    <SessionChildren>
+      {node.children.map(child => (
+        <SessionNodeItem
+          key={child.id}
+          node={child}
+          currentId={currentId}
+          now={now}
+          onOpen={open}
+          onRenameRequest={onSessionRenameRequest}
+          renderSlot={renderSlot}
+          onReveal={child.id === revealSessionId ? () => { onSessionRevealed(child.id) } : undefined}
+          nested
+          t={t}
+        />
+      ))}
+    </SessionChildren>
+  )
 }
 
 /** The list-empty placeholder — a glyph over the text; the archived-only view names its filter and offers the way back. */
@@ -324,15 +389,23 @@ function SessionTree({
   nestWorkspaces, groupExpansion, setGroupExpanded,
   setSessionOrder, home, t,
   revealSessionId, onSessionRevealed, shortcuts,
+  nesting, setSessionChildrenExpanded,
 }: SessionTreeProps) {
   const panelActive = usePanelInfo(info => info.activePanelId !== null)
   const statuses = useSessionStatus(s => s)
   const current = panelActive
     ? undefined
     : Object.values(list.byId).find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
+  // Nested Sessions render in their top-level row's group.
+  const nestingRoots = useMemo(
+    () => sessionNestingRoots(list, rowState, nesting.parents),
+    [list, rowState, nesting.parents],
+  )
+  useUnfoldFor(current, nestingRoots, { nesting, setSessionChildrenExpanded })
+  useUnfoldFor(revealSessionId, nestingRoots, { nesting, setSessionChildrenExpanded })
   const revealGroup = revealSessionId === undefined || !workspaceReady
     ? undefined
-    : owningGroupKey(workspaces, revealSessionId)
+    : owningGroupKey(workspaces, nestingRoots.get(revealSessionId) ?? revealSessionId)
   // Per-group raised watermarks; an absent key means the base watermark.
   const [storedWatermarks, setStoredWatermarks] = useState<Readonly<Record<string, number>>>({})
   // Advances on user-driven watermark changes so AnimatedRows settles them; automatic raises animate.
@@ -346,7 +419,7 @@ function SessionTree({
   useNativeDragAcceptance(nativeDragActive)
   const currentGroup = current === undefined || !workspaceReady
     ? undefined
-    : owningGroupKey(workspaces, current)
+    : owningGroupKey(workspaces, nestingRoots.get(current) ?? current)
   useEffect(() => {
     if (current === undefined || currentGroup === undefined || Object.hasOwn(groupExpansion, currentGroup)) return
     setGroupExpanded(currentGroup, true)
@@ -376,8 +449,9 @@ function SessionTree({
     () => deriveGroups(list, workspaces, rowState, statuses, {
       expandedGroups,
       ungroupedOrder: ungroupedSessionIds,
+      nesting,
     }),
-    [list, workspaces, rowState, statuses, expandedGroups, ungroupedSessionIds],
+    [list, workspaces, rowState, statuses, expandedGroups, ungroupedSessionIds, nesting],
   )
   useEffect(() => {
     for (let key = revealGroup; key !== undefined; key = parents.get(key)) {
@@ -483,7 +557,7 @@ function SessionTree({
     rowKeys.push(`workspace:${group.key}`)
     const childRows = group.expanded ? children.map(child => renderGroup(child, depth + 1)) : []
     const sessions = visible.rows
-    for (const node of sessions) rowKeys.push(`session:${node.id}`)
+    for (const node of sessions) rowKeys.push(...nodeRowKeys(node))
     if (collapsed.hiddenCount > 0) rowKeys.push(`overflow:${group.key}`)
     const workspaceMarker = workspaceId !== undefined && workspaceDrag?.over?.id === workspaceId
       ? workspaceDrag.over.half
@@ -621,20 +695,35 @@ function SessionTree({
             },
           }
           return (
-            <SessionNodeItem
-              key={node.id}
-              node={node}
-              currentId={current}
-              now={now}
-              onOpen={open}
-              onRenameRequest={onSessionRenameRequest}
-              renderSlot={renderSlot}
-              onReveal={node.id === revealSessionId && group.key === revealGroup
-                ? () => { onSessionRevealed(node.id) }
-                : undefined}
-              drag={dragProps}
-              t={t}
-            />
+            <Fragment key={node.id}>
+              <SessionNodeItem
+                node={node}
+                currentId={current}
+                now={now}
+                onOpen={open}
+                onRenameRequest={onSessionRenameRequest}
+                renderSlot={renderSlot}
+                onReveal={node.id === revealSessionId && group.key === revealGroup
+                  ? () => { onSessionRevealed(node.id) }
+                  : undefined}
+                drag={dragProps}
+                onToggleChildren={node.children === undefined
+                  ? undefined
+                  : () => { setSessionChildrenExpanded(node.id, node.childrenExpanded !== true) }}
+                t={t}
+              />
+              <NestedRows
+                node={node}
+                currentId={current}
+                now={now}
+                open={open}
+                onSessionRenameRequest={onSessionRenameRequest}
+                renderSlot={renderSlot}
+                revealSessionId={group.key === revealGroup ? revealSessionId : undefined}
+                onSessionRevealed={onSessionRevealed}
+                t={t}
+              />
+            </Fragment>
           )
         })}
         {collapsed.hiddenCount > 0 && (
@@ -689,8 +778,8 @@ function SessionTree({
 function FlatList({
   list, sessionIds, rowState, onLeaveArchivedOnly, useSessionStatus, open, onSessionRenameRequest,
   usePanelInfo, setSessionOrder, workspaceReady, animationResetKey,
-  revealSessionId, onSessionRevealed, renderSlot, t,
-}: Pick<
+  revealSessionId, onSessionRevealed, renderSlot, nesting, setSessionChildrenExpanded, t,
+}: NestingProps & Pick<
   SessionTreeProps,
   | 'useSessionStatus'
   | 'open'
@@ -712,8 +801,12 @@ function FlatList({
   const panelActive = usePanelInfo(info => info.activePanelId !== null)
   const statuses = useSessionStatus(s => s)
   const rows = useMemo(
-    () => deriveFlat(list, sessionIds, rowState, statuses),
-    [list, sessionIds, rowState, statuses],
+    () => deriveFlat(list, sessionIds, rowState, statuses, nesting),
+    [list, sessionIds, rowState, statuses, nesting],
+  )
+  const nestingRoots = useMemo(
+    () => sessionNestingRoots(list, rowState, nesting.parents),
+    [list, rowState, nesting.parents],
   )
   const [drag, setDrag] = useState<DragState | null>(null)
   const dropCommitted = useRef(false)
@@ -721,6 +814,8 @@ function FlatList({
   const currentId = panelActive
     ? undefined
     : Object.values(list.byId).find(session => (session.retainedBy.mainView ?? 0) > 0)?.id
+  useUnfoldFor(currentId, nestingRoots, { nesting, setSessionChildrenExpanded })
+  useUnfoldFor(revealSessionId, nestingRoots, { nesting, setSessionChildrenExpanded })
   const commitDrag = (activeDrag: DragState, over: NonNullable<DragState['over']>): void => {
     if (dropCommitted.current) return
     dropCommitted.current = true
@@ -734,7 +829,7 @@ function FlatList({
       <AnimatedRows
         className={clsx(css.list, css.flatList)}
         label={t('section.sessions')}
-        rowKeys={rows.length === 0 ? ['empty'] : rows.map(row => `session:${row.id}`)}
+        rowKeys={rows.length === 0 ? ['empty'] : rows.flatMap(nodeRowKeys)}
         ready={list.phase === 'ready' && workspaceReady && drag === null}
         resetKey={animationResetKey}
       >
@@ -746,40 +841,55 @@ function FlatList({
           const normalizeHalf = (half: 'before' | 'after'): 'before' | 'after' =>
             node.blank ? 'after' : half
           return (
-            <SessionNodeItem
-              key={node.id}
-              node={node}
-              currentId={currentId}
-              now={now}
-              onOpen={open}
-              onRenameRequest={onSessionRenameRequest}
-              renderSlot={renderSlot}
-              onReveal={node.id === revealSessionId
-                ? () => { onSessionRevealed(node.id) }
-                : undefined}
-              drag={{
-                start: () => {
-                  dropCommitted.current = false
-                  setDrag({ accountKey: FLAT_SESSION_ORDER_KEY, sessionId: node.id, pinned: node.pinned, over: null })
-                },
-                active,
-                marker: active && drag.over?.id === node.id ? drag.over.half : null,
-                hover: (half) => {
-                  setDrag(current => current === null ? current : {
-                    ...current, over: { id: node.id, half: normalizeHalf(half) },
-                  })
-                },
-                drop: (half) => {
-                  if (drag !== null) commitDrag(drag, { id: node.id, half: normalizeHalf(half) })
-                },
-                end: () => {
-                  if (drag?.over !== null && drag?.over !== undefined) commitDrag(drag, drag.over)
-                  else setDrag(null)
-                  dropCommitted.current = false
-                },
-              }}
-              t={t}
-            />
+            <Fragment key={node.id}>
+              <SessionNodeItem
+                node={node}
+                currentId={currentId}
+                now={now}
+                onOpen={open}
+                onRenameRequest={onSessionRenameRequest}
+                renderSlot={renderSlot}
+                onReveal={node.id === revealSessionId
+                  ? () => { onSessionRevealed(node.id) }
+                  : undefined}
+                drag={{
+                  start: () => {
+                    dropCommitted.current = false
+                    setDrag({ accountKey: FLAT_SESSION_ORDER_KEY, sessionId: node.id, pinned: node.pinned, over: null })
+                  },
+                  active,
+                  marker: active && drag.over?.id === node.id ? drag.over.half : null,
+                  hover: (half) => {
+                    setDrag(current => current === null ? current : {
+                      ...current, over: { id: node.id, half: normalizeHalf(half) },
+                    })
+                  },
+                  drop: (half) => {
+                    if (drag !== null) commitDrag(drag, { id: node.id, half: normalizeHalf(half) })
+                  },
+                  end: () => {
+                    if (drag?.over !== null && drag?.over !== undefined) commitDrag(drag, drag.over)
+                    else setDrag(null)
+                    dropCommitted.current = false
+                  },
+                }}
+                onToggleChildren={node.children === undefined
+                  ? undefined
+                  : () => { setSessionChildrenExpanded(node.id, node.childrenExpanded !== true) }}
+                t={t}
+              />
+              <NestedRows
+                node={node}
+                currentId={currentId}
+                now={now}
+                open={open}
+                onSessionRenameRequest={onSessionRenameRequest}
+                renderSlot={renderSlot}
+                revealSessionId={revealSessionId}
+                onSessionRevealed={onSessionRevealed}
+                t={t}
+              />
+            </Fragment>
           )
         })}
       </AnimatedRows>
@@ -917,6 +1027,7 @@ export function WorkspaceBrowser({
   useHostInfo,
   useShortcuts,
   useWorkspaceShortcuts,
+  useSessionParents,
   requestSearch,
   requestAddWorkspace,
   closeAddWorkspace,
@@ -956,6 +1067,12 @@ export function WorkspaceBrowser({
   const archivedFilter = useStore(s => s.archivedFilter ?? 'default')
   const groupExpansion = useStore(s => s.groupExpansion)
   const sessionOrderByAccount = useStore(s => s.sessionOrderByAccount)
+  const sessionParents = useSessionParents(parents => parents)
+  const foldedSessionIds = useStore(s => s.foldedSessionIds)
+  const nesting = useMemo<SessionNesting>(() => ({
+    parents: sessionParents,
+    collapsed: new Set((foldedSessionIds ?? []) as SessionId[]),
+  }), [foldedSessionIds, sessionParents])
   // Archived sessions are not openable: the row stays visible under the
   // filter but a click explains instead of navigating.
   const guardedOpen = (sessionId: SessionId): void => {
@@ -1434,6 +1551,8 @@ export function WorkspaceBrowser({
                 setSessionOrder={saveSessionOrder}
                 revealSessionId={revealSessionId}
                 onSessionRevealed={acknowledgeSessionReveal}
+                nesting={nesting}
+                setSessionChildrenExpanded={actions.setSessionChildrenExpanded}
                 t={t}
               />
             )
@@ -1460,6 +1579,8 @@ export function WorkspaceBrowser({
                 insertWorkspaceBefore={insertWorkspaceBefore}
                 revealSessionId={revealSessionId}
                 onSessionRevealed={acknowledgeSessionReveal}
+                nesting={nesting}
+                setSessionChildrenExpanded={actions.setSessionChildrenExpanded}
                 home={home}
                 t={t}
                 onRenameRequest={(workspaceId, displayTitle) => {

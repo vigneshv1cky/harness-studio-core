@@ -20,6 +20,7 @@ import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import type { DraftInitializationOptions, SessionInputResolver } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { RowToast } from '../src/client/contract/slots.ts'
 import { DirectoryBrowseError, UiWorkspaceService } from '../src/client/navigation.ts'
+import { SessionParentRegistry } from '../src/client/session-parents.ts'
 import { en, zh } from '../src/client/locales.ts'
 import { createWorkspaceViewStore, FLAT_SESSION_ORDER_KEY } from '../src/client/stores.ts'
 import { UNGROUPED_KEY } from '../src/client/tree.ts'
@@ -303,6 +304,7 @@ function bench(options: BenchOptions = {}) {
   options.configureSessions?.(sessions)
   const view = createWorkspaceViewStore().create()
   const notify = vi.fn<(toast: RowToast) => void>()
+  const sessionParents = new SessionParentRegistry()
   const uiWorkspace = new UiWorkspaceService(
     ctx,
     directoryPicker.remote,
@@ -310,8 +312,12 @@ function bench(options: BenchOptions = {}) {
     sessions,
     view.actions,
     notify,
+    sessionParents,
   )
-  return { ctx, directoryPicker, sessions, uiWorkspace, workspaces, layout, selectPanel, view, notify, requestDraftInitialization }
+  return {
+    ctx, directoryPicker, sessions, uiWorkspace, workspaces, layout, selectPanel, view, notify, requestDraftInitialization,
+    sessionParents,
+  }
 }
 
 function lastOpening(open: MockInstance<UiWorkspaceService['openWorkspace']>): Promise<void> {
@@ -321,6 +327,21 @@ function lastOpening(open: MockInstance<UiWorkspaceService['openWorkspace']>): P
 }
 
 describe('UiWorkspaceService', () => {
+  it('removes a plugin\'s registered Session parents when that plugin unloads', async () => {
+    const b = bench()
+    const parents = new Map([[sid('child'), sid('parent')]])
+    const fiber = b.ctx.plugin({
+      name: 'nesting-source',
+      apply: (ctx: Context) => {
+        ctx.effect(() => b.uiWorkspace.registerSessionParents({ getSnapshot: () => parents, subscribe: () => () => {} }))
+      },
+    })
+    await fiber.await()
+    expect(b.sessionParents.parents.getSnapshot()).toBe(parents)
+    await fiber.dispose()
+    expect(b.sessionParents.parents.getSnapshot().size).toBe(0)
+  })
+
   it('prepares and selects the default Workspace after both startup baselines', async () => {
     const b = bench({ configureWorkspaces: (workspaces) => {
       workspaces.initializeDefault.mockImplementation(async () => {

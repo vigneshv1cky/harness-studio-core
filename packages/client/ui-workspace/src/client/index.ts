@@ -45,6 +45,7 @@ import {
 } from './contract/slots.ts'
 import { createWorkspaceShortcutControls, installWorkspaceShortcuts } from './shortcuts.ts'
 import { UiWorkspaceService } from './navigation.ts'
+import { SessionParentRegistry } from './session-parents.ts'
 import { createWorkspaceViewStore } from './stores.ts'
 import { WorkspaceBrowser } from './rows/WorkspaceBrowser.tsx'
 import { ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog } from './session-actions/ArchiveSession.tsx'
@@ -121,8 +122,9 @@ export function apply(ctx: Context): void {
   const rowToast = createSnapshotStore<RowToastState | null>(null)
   let toastSeq = 0
   const notify = (toast: RowToast): void => { rowToast.set({ ...toast, seq: ++toastSeq }) }
+  const sessionParents = new SessionParentRegistry()
   const uiWorkspace = new UiWorkspaceService(
-    ctx, ctx.remote.directoryPicker, workspaces, sessions, viewInstance.actions, notify,
+    ctx, ctx.remote.directoryPicker, workspaces, sessions, viewInstance.actions, notify, sessionParents,
   )
   ctx.slots.provideRoot({
     hooks: { workspaces: workspaces.list },
@@ -281,7 +283,10 @@ export function apply(ctx: Context): void {
     requestAddWorkspace: shortcutControls.add,
     closeAddWorkspace: shortcutControls.closeAdd,
     setDirectoryBusy: shortcutControls.directoryBusy,
-    hooks: { directoryFlow: browserFlowSource, hostInfo, workspaceShortcuts: shortcutControls.state, shortcuts: ctx.shortcuts.catalog },
+    hooks: {
+      directoryFlow: browserFlowSource, hostInfo, workspaceShortcuts: shortcutControls.state,
+      shortcuts: ctx.shortcuts.catalog, sessionParents: sessionParents.parents,
+    },
   })
   const pickerInjected = (): WorkspacePickerInjected => ({
     createWorkspace: input => workspaces.create(input),

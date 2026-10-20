@@ -28,6 +28,8 @@ type WorkspaceViewState = {
   sessionOrderByAccount: Record<string, string[]>
   /** Archived-row visibility; omitted in pre-filter v5 snapshots and read as 'default'. */
   archivedFilter?: ArchivedFilter
+  /** Top-level rows whose nested Sessions are folded; omitted in earlier v5 snapshots and read as none. */
+  foldedSessionIds?: string[]
 }
 
 type SessionOrderSource = {
@@ -66,6 +68,7 @@ type WorkspaceViewActions = {
     source: SessionOrderSource,
   ) => void
   setArchivedFilter: (draft: WorkspaceViewState, filter: ArchivedFilter) => void
+  setSessionChildrenExpanded: (draft: WorkspaceViewState, sessionId: string, expanded: boolean) => void
 }
 
 /** Copy read-only projections into the persisted mutable store representation. */
@@ -125,6 +128,10 @@ export function createWorkspaceViewStore(): EngineStoreHandle<WorkspaceViewState
         }))
       },
       setArchivedFilter: (d, filter: ArchivedFilter) => { d.archivedFilter = filter },
+      setSessionChildrenExpanded: (d, sessionId: string, expanded: boolean) => {
+        const folded = (d.foldedSessionIds ?? []).filter(id => id !== sessionId)
+        d.foldedSessionIds = expanded ? folded : [...folded, sessionId]
+      },
     },
   })
 }
