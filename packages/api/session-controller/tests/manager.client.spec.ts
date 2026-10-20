@@ -1263,6 +1263,16 @@ describe('remaining branches', () => {
     expect(manager.getListSnapshot().items[0]).toMatchObject({ sessionId: S2, parentSessionId: S1 })
   })
 
+  it('forwards the turn to fork before to the Remote request', async ({ mock, remote }) => {
+    const manager = makeManager(mock, remote)
+    onTestFinished(() => manager.dispose())
+    remote.session.fork.mockResolvedValueOnce(ok({ sessionId: S2 }))
+
+    await expect(manager.fork({ sessionId: S1, beforeTurn: 2 })).resolves.toEqual(ok({ sessionId: S2 }))
+
+    expect(remote.session.fork).toHaveBeenCalledExactlyOnceWith({ sessionId: S1, beforeTurn: 2 })
+  })
+
   it('reconciles a fork child published before workspace attachment fails', async ({ mock, remote }) => {
     remote.session.fork.mockResolvedValue(err(new RemoteError('session/workspace-attach-failed', 'forked but unattached', {
       sessionId: S2, workspaceId: 'w1',

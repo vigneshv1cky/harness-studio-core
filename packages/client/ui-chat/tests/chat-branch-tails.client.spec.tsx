@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { bindSnapshotSelector, makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
@@ -13,7 +14,7 @@ import {
 } from '../src/client/chat/message-chrome.ts'
 import {
   CompactionNodeView, ContextMessageNodeView, RetryNodeView, UnknownNodeView,
-  UserMessageNodeView,
+  SteeringMessageNodeView, UserMessageNodeView,
 } from '../src/client/chat/MessageItem.tsx'
 import { AssistantMarkdown } from '../src/client/chat/AssistantMarkdown.tsx'
 import { useDetailedPresentation } from './presentation-fixture.client.ts'
@@ -48,10 +49,12 @@ interface MessageItemProps {
   readonly t: ChatNodeViewProps['t']
   readonly referenceLabels?: readonly string[]
   readonly skillNames?: readonly string[]
+  readonly location?: ChatConversationViewNode['location']
+  readonly renderSlot?: ComponentProps<typeof UserMessageNodeView>['renderSlot']
 }
 
 /** Legacy-node fixture adapter for the independently registered renderers. */
-function MessageItem({ node, t: translate, referenceLabels, skillNames }: MessageItemProps) {
+function MessageItem({ node, t: translate, referenceLabels, skillNames, location, renderSlot }: MessageItemProps) {
   const kind = node.kind === 'assistant' ? 'assistant-step' : node.kind
   const viewNode: ChatConversationViewNode = {
     key: `fixture:${node.kind}:${node.seq}`,
@@ -59,7 +62,7 @@ function MessageItem({ node, t: translate, referenceLabels, skillNames }: Messag
     id: String(node.seq),
     target: 'chat',
     anchorSeq: node.seq,
-    location: { kind: 'session' },
+    location: location ?? { kind: 'session' },
     visibility: 'visible',
     data: node.kind === 'model-retry'
       ? { attempts: [node], current: node }
@@ -79,10 +82,12 @@ function MessageItem({ node, t: translate, referenceLabels, skillNames }: Messag
     node: viewNode, t: translate, loadImage: unusedImageLoader, renderFactorySlot: renderUserFactory,
     openFile: vi.fn(), useChat: useDetachedChat,
   }
+  const userProps = { ...props, renderSlot: renderSlot ?? (() => null) }
   switch (node.kind) {
     case 'user':
+      return <UserMessageNodeView {...userProps as ComponentProps<typeof UserMessageNodeView>} />
     case 'steering':
-      return <UserMessageNodeView {...props as ChatNodeViewProps<'user' | 'steering'>} />
+      return <SteeringMessageNodeView {...props as ChatNodeViewProps<'steering'>} />
     case 'context':
       return <ContextMessageNodeView {...props as ChatNodeViewProps<'context'>} />
     case 'compaction':
@@ -196,6 +201,42 @@ describe('MessageItem arms', () => {
     expect(screen.queryByRole('button', { name: '编辑' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '复制' }))
     expect(writeText).toHaveBeenCalledWith('hello bubble')
+  })
+
+  it.each([1, 2])('seats user-actions entries with the message seq, Turn, and text at step %i', (step) => {
+    const turn = { turn: 3, status: 'closed', start: undefined, end: undefined, steps: [] }
+    const location = { kind: 'step', turn, step: { step } } as never
+    const renderSlot = vi.fn(() => <button type="button">Rewind</button>)
+    render(
+      <MessageItem t={t} location={location} renderSlot={renderSlot} node={{
+        kind: 'user', seq: 7, time: Date.now(), content: [{ type: 'text', text: 'edit me' }], source: null,
+      }}
+      />,
+    )
+    expect(renderSlot).toHaveBeenCalledWith('conversation.chat.user-actions', {
+      seq: 7, turn: { turn: 3, status: 'closed' }, opensTurn: step === 1, text: 'edit me',
+    })
+    expect(screen.getByRole('button', { name: 'Rewind' })).toBeTruthy()
+  })
+
+  it('seats no user-actions entries on steering', () => {
+    const renderSlot = vi.fn(() => null)
+    render(<MessageItem t={t} renderSlot={renderSlot} node={{
+      kind: 'steering', messageId: 'm-4', seq: 4, time: Date.now(), content: [{ type: 'text', text: 'steer' }], source: null,
+    } as never}
+    />)
+    expect(renderSlot).not.toHaveBeenCalled()
+  })
+
+  it('seats user-actions entries without a Turn outside one', () => {
+    const renderSlot = vi.fn(() => null)
+    render(<MessageItem t={t} renderSlot={renderSlot} node={{
+      kind: 'user', seq: 2, time: Date.now(), content: [{ type: 'text', text: 'loose' }], source: null,
+    }}
+    />)
+    expect(renderSlot).toHaveBeenCalledWith('conversation.chat.user-actions', {
+      seq: 2, turn: undefined, opensTurn: false, text: 'loose',
+    })
   })
 
   it('user copy falls back to execCommand when clipboard.writeText is unavailable', () => {

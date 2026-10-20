@@ -89,6 +89,52 @@ function latestCompletedPrefixBoundary(events: readonly SessionEvent[]): Session
   return boundary
 }
 
+/**
+ * Resolve `beforeTurn` to the last event before the turn's admission: its
+ * `turn/start` and the inbox splices and appended user messages immediately
+ * before it belong to the turn and are excluded.
+ * @returns the inclusive boundary, `missing` when no such turn started, or
+ *   `empty` when no event precedes the turn.
+ */
+function beforeTurnBoundary(events: readonly SessionEvent[], turn: number): SessionSeq | 'missing' | 'empty' {
+  const start = events.findIndex(event => event.type === 'turn/start' && event.data.turn === turn)
+  if (start === -1) return 'missing'
+  let index = start - 1
+  for (; index >= 0; index--) {
+    const event = events[index]
+    if (!(event?.type === 'agent/inbox/spliced' || (event?.type === 'user/message' && event.surfaceOp === 'append'))) break
+  }
+  const boundary = events[index]
+  return boundary === undefined ? 'empty' : boundary.seq
+}
+
+/**
+ * Discard the input still pending at the end of a fork seed. A seed cut before
+ * a turn would otherwise carry that turn's queued prompt into the child, which
+ * replays it as pending input on its next turn.
+ * @param seed - fork seed whose sequence numbers are contiguous from zero.
+ * @returns the seed followed by one cancelling splice per non-empty inbox list.
+ */
+function discardPendingInput(seed: SessionEvent[]): SessionEvent[] {
+  const pending = { 'next-turn': 0, 'next-step': 0 }
+  for (const event of seed) {
+    if (event.type !== 'agent/inbox/spliced') continue
+    pending[event.data.target] += event.data.inserted.length - (event.data.removedCount ?? 0)
+  }
+  // oxlint-disable-next-line typescript/no-non-null-assertion -- a fork seed always ends with its `session/end-seed`.
+  const last = seed.at(-1)!
+  for (const target of ['next-turn', 'next-step'] as const) {
+    if (pending[target] <= 0) continue
+    seed.push({
+      type: 'agent/inbox/spliced',
+      seq: SessionSeq(seed.length),
+      time: last.time,
+      data: { target, start: 0, removedCount: pending[target], inserted: [], outcome: 'canceled' },
+    })
+  }
+  return seed
+}
+
 /** Implements Session business commands delegated by the Session Controller Remote service. */
 export class SessionCommandController {
   /**
@@ -219,9 +265,11 @@ export class SessionCommandController {
 
   /**
    * Create a new ordinary Session from an exact event prefix. An explicit
-   * `atSeq` is the inclusive cut; an omitted value selects the latest
-   * completed-turn prefix. An open cut receives synthetic fork closers.
-   * @param request - source Session and optional exact event boundary.
+   * `atSeq` is the inclusive cut; `beforeTurn` cuts before that turn's
+   * admission and discards the input still pending there; omitting both
+   * selects the latest completed-turn prefix. An open cut receives synthetic
+   * fork closers.
+   * @param request - source Session and optional exact event boundary or turn.
    * @returns the new Session identity.
    */
   async fork(request: SessionForkRequest): Promise<SessionForkValue> {
@@ -230,6 +278,13 @@ export class SessionCommandController {
       atSeq = request.atSeq === undefined ? undefined : SessionSeq(request.atSeq)
     } catch {
       throw new RemoteError('gateway/bad-request', 'atSeq must be a non-negative safe integer', {})
+    }
+    const beforeTurn = request.beforeTurn
+    if (beforeTurn !== undefined && (!Number.isSafeInteger(beforeTurn) || beforeTurn < 1)) {
+      throw new RemoteError('gateway/bad-request', 'beforeTurn must be a positive safe integer', {})
+    }
+    if (beforeTurn !== undefined && atSeq !== undefined) {
+      throw new RemoteError('gateway/bad-request', 'atSeq and beforeTurn are mutually exclusive', {})
     }
     let observed: SessionObservation
     try {
@@ -248,7 +303,17 @@ export class SessionCommandController {
       )
     }
     using source = observed
-    const boundary = atSeq ?? latestCompletedPrefixBoundary(source.events)
+    const beforeTurnCut = beforeTurn === undefined ? undefined : beforeTurnBoundary(source.events, beforeTurn)
+    if (beforeTurnCut === 'missing' || beforeTurnCut === 'empty') {
+      throw new RemoteError(
+        'session/fork-unavailable',
+        beforeTurnCut === 'missing'
+          ? `turn ${String(beforeTurn)} does not exist in session "${request.sessionId}"`
+          : `session "${request.sessionId}" has no history before turn ${String(beforeTurn)} to fork from`,
+        { sessionId: request.sessionId },
+      )
+    }
+    const boundary = atSeq ?? beforeTurnCut ?? latestCompletedPrefixBoundary(source.events)
     if (boundary === undefined || source.events[boundary]?.seq !== boundary) {
       throw new RemoteError(
         'session/fork-unavailable',
@@ -258,7 +323,8 @@ export class SessionCommandController {
         { sessionId: request.sessionId },
       )
     }
-    const seed = buildForkSeed(source.events, boundary)
+    const forkSeed = buildForkSeed(source.events, boundary)
+    const seed = beforeTurn === undefined ? forkSeed : discardPendingInput(forkSeed)
     let workspace: Workspace | undefined
     try {
       workspace = await this.forkWorkspace(source.header)

@@ -450,7 +450,7 @@ export class ClientSessions implements ISessions {
    * @param opts - source session id, the optional exact inclusive boundary
    *   seq (a real event seq the caller already knows; a cut inside an open
    *   turn is balanced Host-side with synthetic closers, and omission selects
-   *   the latest completed-turn prefix), and whether to increment an
+   *   the latest completed-turn prefix) or the turn to fork before, and whether to increment an
    *   inherited durable title before resolving, plus permission to start source migration.
    * @returns the child session id.
    * @throws {SessionForkError} with the source id.
@@ -459,6 +459,7 @@ export class ClientSessions implements ISessions {
   async fork(opts: {
     sessionId: SessionId
     atSeq?: number
+    beforeTurn?: number
     increaseTitle?: boolean
     onCreated?: (childId: SessionId) => void
     allowMigration?: boolean
@@ -469,6 +470,7 @@ export class ClientSessions implements ISessions {
     const result = await this.manager.fork({
       sessionId: opts.sessionId,
       ...(opts.atSeq === undefined ? {} : { atSeq: SessionSeq(opts.atSeq) }),
+      ...(opts.beforeTurn === undefined ? {} : { beforeTurn: opts.beforeTurn }),
       ...(opts.allowMigration === undefined ? {} : { allowMigration: opts.allowMigration }),
     })
     if (!result.ok) throw new SessionForkError(result.error, opts.sessionId)

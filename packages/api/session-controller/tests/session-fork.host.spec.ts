@@ -542,6 +542,161 @@ describe('sessions.fork', () => {
     await ctx.fiber.dispose()
   })
 
+  describe('beforeTurn', () => {
+    /** Two turns admitted through the inbox the way a live Agent records them, after a preamble event. */
+    async function admittedTurns(ctx: Context, id: string, queuedDuringTurnOne = false): Promise<Session> {
+      const session = ctx.sessions.create(sid(id), { meta: { cwd: '/proj' } })
+      session.append('session/title', { title: 'Preamble', messageSeqs: [], source: { kind: 'user' } })
+      for (const turn of [1, 2]) {
+        const prompt = message(`prompt ${String(turn)}`)
+        if (!(turn === 2 && queuedDuringTurnOne)) {
+          session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [prompt] })
+        }
+        session.append('turn/start', { turn })
+        session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] })
+        session.append('user/message', prompt, { surfaceOp: 'append' })
+        if (turn === 1 && queuedDuringTurnOne) {
+          session.append('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [message('prompt 2')] })
+        }
+        session.append('turn/end', { turn, reason: { kind: 'completed' } })
+      }
+      await ctx.agents.register({ id: session.id, session, status: 'idle', ctx } as Agent)
+      return session
+    }
+
+    it('cuts before the turn and the splice that queued its prompt', async () => {
+      const ctx = await composed()
+      try {
+        const source = await admittedTurns(ctx, 'before-turn')
+        const turnOneEnd = source.snapshotEvents().find(event => event.type === 'turn/end')!.seq
+
+        const response = await remote(ctx).fork({ sessionId: source.id, beforeTurn: 2 })
+
+        if (!response.ok) throw response.error
+        const child = ctx.sessions.get(response.value.sessionId)!
+        expect(child.inheritedEventCount).toBe(turnOneEnd + 1)
+        expect(child.snapshotEvents().map(event => event.type)).toEqual([
+          'session/title',
+          'agent/inbox/spliced', 'turn/start', 'agent/inbox/spliced', 'user/message', 'turn/end',
+          'session/end-seed',
+        ])
+        expect(source.snapshotEvents().at(-1)?.type).toBe('turn/end')
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+
+    it('continues a real Agent from before the turn with the edited prompt and nothing pending', async () => {
+      const ctx = new Context()
+      try {
+        await mountAgentLoopTestDependencies(ctx)
+        const harness = await mountAgentLoopTestHarness(ctx)
+        const adapter = new MockAdapter([textResponse('reply one'), textResponse('reply two'), textResponse('reply edited')])
+        ctx.llm.registerAdapter(['mock'], adapter)
+        ctx.provide('workspaceRegistry', { list: () => [], archivedSessionIds: [] } as never)
+        const source = await harness.create(sid('rewind-source'), { provider: 'mock', model: 'mock' })
+        source.followup(message('first prompt'))
+        await source.whenIdle()
+        source.inbox.append('next-turn', message('queued second prompt'))
+        source.followup(message('second prompt'))
+        await source.whenIdle()
+
+        const response = await createSessionTestRemote(ctx, {
+          defaultModelSelection: () => ({ provider: 'mock', model: 'mock' }), cwd: '/tmp',
+        }).fork({ sessionId: source.id, beforeTurn: 2 })
+
+        if (!response.ok) throw response.error
+        const child = ctx.agents.get(response.value.sessionId)!
+        expect([...child.inbox.nextTurn, ...child.inbox.nextStep]).toEqual([])
+        expect(child.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(1)
+        child.followup(message('edited second prompt'))
+        await child.whenIdle()
+        const requestText = JSON.stringify(adapter.requests.at(-1)?.messages)
+        expect(requestText).toContain('first prompt')
+        expect(requestText).toContain('reply one')
+        expect(requestText).toContain('edited second prompt')
+        expect(requestText).not.toContain('queued second prompt')
+        expect(requestText).not.toContain('reply two')
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+
+    it('keeps only the preamble before the first turn', async () => {
+      const ctx = await composed()
+      try {
+        const source = await admittedTurns(ctx, 'before-first-turn')
+
+        const response = await remote(ctx).fork({ sessionId: source.id, beforeTurn: 1 })
+
+        if (!response.ok) throw response.error
+        expect(ctx.sessions.get(response.value.sessionId)?.snapshotEvents().map(event => event.type))
+          .toEqual(['session/title', 'session/end-seed'])
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+
+    it('discards a prompt queued during the previous turn', async () => {
+      const ctx = await composed()
+      try {
+        const source = await admittedTurns(ctx, 'before-turn-queued', true)
+
+        const response = await remote(ctx).fork({ sessionId: source.id, beforeTurn: 2 })
+
+        if (!response.ok) throw response.error
+        const child = ctx.sessions.get(response.value.sessionId)!
+        const events = child.snapshotEvents()
+        expect(events.slice(child.inheritedEventCount).map(event => event.type))
+          .toEqual(['session/end-seed', 'agent/inbox/spliced'])
+        const discard = events.at(-1)
+        expect(discard?.type === 'agent/inbox/spliced' && discard.data).toEqual({
+          target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled',
+        })
+        expect(events.map(event => event.seq)).toEqual(events.map((_, index) => index))
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+
+    it.each([
+      { beforeTurn: 3, code: 'session/fork-unavailable', message: /turn 3 does not exist/ },
+      { beforeTurn: 0, code: 'gateway/bad-request', message: /positive safe integer/ },
+      { beforeTurn: 1.5, code: 'gateway/bad-request', message: /positive safe integer/ },
+    ])('rejects beforeTurn $beforeTurn', async ({ beforeTurn, code, message: text }) => {
+      const ctx = await composed()
+      try {
+        const source = await admittedTurns(ctx, 'before-turn-invalid')
+        const create = vi.spyOn(ctx.agents, 'create')
+
+        const response = await remote(ctx).fork({ sessionId: source.id, beforeTurn })
+
+        expect(response).toMatchObject({ ok: false, error: { code } })
+        if (!response.ok) expect(response.error.message).toMatch(text)
+        expect(create).not.toHaveBeenCalled()
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+
+    it('rejects a turn with no history before it, and atSeq together with beforeTurn', async () => {
+      const ctx = await composed()
+      try {
+        const source = await liveAgent(ctx, 'before-turn-empty', 1)
+        const proxy = remote(ctx)
+
+        const empty = await proxy.fork({ sessionId: source.id, beforeTurn: 1 })
+        expect(empty).toMatchObject({ ok: false, error: { code: 'session/fork-unavailable' } })
+        if (!empty.ok) expect(empty.error.message).toMatch(/no history before turn 1/)
+        const both = await proxy.fork({ sessionId: source.id, beforeTurn: 1, atSeq: 0 })
+        expect(both).toMatchObject({ ok: false, error: { code: 'gateway/bad-request' } })
+        if (!both.ok) expect(both.error.message).toMatch(/mutually exclusive/)
+      } finally {
+        await ctx.fiber.dispose()
+      }
+    })
+  })
+
   it('does not extend an explicit boundary through standalone tail events', async () => {
     const ctx = await composed()
     const source = await liveAgent(ctx, 'session-exact', 1)

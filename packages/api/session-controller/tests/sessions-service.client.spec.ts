@@ -1019,6 +1019,16 @@ describe('fork', () => {
     expect(b.mock.remote.session.fork).toHaveBeenCalledExactlyOnceWith({ sessionId: 'source', atSeq: 41 })
   })
 
+  it('sends the turn to fork before verbatim', async ({ bench }) => {
+    const b = bench()
+    await feedList(b, [{ id: 'source', cwd: '/work' }])
+    b.mock.remote.session.fork.mockResolvedValue(ok({ sessionId: sid('child') }))
+
+    await expect(b.svc.fork({ sessionId: sid('source'), beforeTurn: 3 })).resolves.toBe('child')
+
+    expect(b.mock.remote.session.fork).toHaveBeenCalledExactlyOnceWith({ sessionId: 'source', beforeTurn: 3 })
+  })
+
   it('does not rename without the title policy or a durable source title', async ({ bench }) => {
     const b = bench()
     await feedList(b, [{ id: 'source', cwd: '/work' }])

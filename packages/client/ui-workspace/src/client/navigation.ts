@@ -40,8 +40,10 @@ export interface UiWorkspace {
   /**
    * Select a Session and show its Conversation as one UI navigation action.
    * @param target - known Session identity or durable direct-parent subagent address to display.
+   * @param draft - composer text to prepare before the Conversation shows; a
+   *   composer that cannot take it aborts the open and reports the failure.
    */
-  openSession(target: SessionTarget): void
+  openSession(target: SessionTarget, draft?: DraftInitializationOptions): void
   /**
    * Connect a Workspace and open its Session unless a later navigation supersedes it.
    * @param workspaceId - target Workspace.
@@ -273,8 +275,12 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
   }
 
-  openSession(target: SessionTarget): void {
-    this.replaceMain(target, this.lifetime.signal, 'reveal')
+  openSession(target: SessionTarget, draft?: DraftInitializationOptions): void {
+    this.replaceMain(target, this.lifetime.signal, 'reveal', draft === undefined ? undefined : (id) => {
+      const binding = this.sessions.binding(id)
+      if (binding === undefined) this.draftPreparationFailed()
+      this.prepareDraft(binding, draft)
+    })
   }
 
   openWorkspace(

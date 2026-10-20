@@ -136,7 +136,10 @@ Factory: conversation.content [ConversationContent]
 │     ├─ id=chat [ChatView]
 │     │  └─ conversation.chat.flow [ChatFlow]
 │     │     └─ conversation.chat.node [ChatNodeSeat dispatch]
-│     │        ├─ key=user,steering [UserMessageNodeView]
+│     │        ├─ key=user [UserMessageNodeView]
+│     │        │  ├─ calls Factory: conversation.chat.user.content
+│     │        │  └─ conversation.chat.user-actions
+│     │        ├─ key=steering [UserMessageNodeView]
 │     │        │  └─ calls Factory: conversation.chat.user.content
 │     │        ├─ key=assistant-step [AssistantNodeView / AssistantMarkdown]
 │     │        │  ├─ conversation.chat.message.images [MessageImages]

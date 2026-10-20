@@ -331,6 +331,11 @@ export interface SessionForkRequest {
   readonly sessionId: SessionId
   /** Exact inclusive source event seq; omission selects the latest completed-turn prefix. */
   readonly atSeq?: number
+  /**
+   * Fork the conversation as it stood before this turn was admitted, with no
+   * pending input; exclusive with `atSeq`.
+   */
+  readonly beforeTurn?: number
   /** False asks the Host to check for required migration before forking. Defaults to true. */
   readonly allowMigration?: boolean
 }

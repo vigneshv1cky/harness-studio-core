@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { PendingSubmission } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { PropsRenderFactories } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsRenderFactories, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { UserTextFacts } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { JsonBlock, StateDot, TextShimmer, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
@@ -329,10 +329,14 @@ export function PendingSubmissionBubble({ submission, onUnsend, loadImage, rende
   )
 }
 
-/** User and admitted-steering keyed Chat renderer. */
-export const UserMessageNodeView = memo(function UserMessageNodeView({
-  node, renderFactorySlot, loadImage, t,
-}: ChatNodeViewProps<'user' | 'steering'>) {
+/**
+ * One durable user or admitted-steering bubble with its action row.
+ * @param props - the node, render seats, and actions seated after the copy control.
+ * @returns the user bubble.
+ */
+function DurableUserBubble({ node, renderFactorySlot, loadImage, t, extraActions }: Pick<
+  ChatNodeViewProps<'user' | 'steering'>, 'node' | 'renderFactorySlot' | 'loadImage' | 't'
+> & { extraActions?: (text: string) => ReactNode }): ReactNode {
   const data = node.data
   return (
     <UserStyleBubble
@@ -348,11 +352,39 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
           time={data.time}
           clock="start"
           className={css.actions}
+          extraActions={extraActions?.(text)}
           t={t}
         />
       )}
     />
   )
+}
+
+/** User-message keyed Chat renderer, with the `conversation.chat.user-actions` seat. */
+export const UserMessageNodeView = memo(function UserMessageNodeView({
+  node, renderFactorySlot, renderSlot, loadImage, t,
+}: ChatNodeViewProps<'user'> & PropsRenderSlots<'conversation.chat.user-actions'>) {
+  const location = node.location
+  const turn = location.kind === 'turn' || location.kind === 'step'
+    ? { turn: location.turn.turn, status: location.turn.status }
+    : undefined
+  const opensTurn = location.kind === 'step' && location.step.step === 1
+  return (
+    <DurableUserBubble
+      node={node}
+      renderFactorySlot={renderFactorySlot}
+      loadImage={loadImage}
+      t={t}
+      extraActions={text => renderSlot('conversation.chat.user-actions', { seq: node.data.seq, turn, opensTurn, text })}
+    />
+  )
+})
+
+/** Admitted-steering keyed Chat renderer; steering continues a running Turn, so it seats no user actions. */
+export const SteeringMessageNodeView = memo(function SteeringMessageNodeView({
+  node, renderFactorySlot, loadImage, t,
+}: ChatNodeViewProps<'steering'>) {
+  return <DurableUserBubble node={node} renderFactorySlot={renderFactorySlot} loadImage={loadImage} t={t} />
 })
 
 /** Injected-context keyed Chat renderer. */

@@ -788,6 +788,55 @@ describe('UiWorkspaceService', () => {
     expect(b.selectPanel).toHaveBeenCalledWith(null)
   })
 
+  describe('openSession draft initialization', () => {
+    it('prepares the draft on the retained target before replacing the current selection', () => {
+      const backing = persistSelection({})
+      const b = bench()
+      b.uiWorkspace.openSession(sid('previous'))
+      const previous = b.sessions.retained[0]!
+      b.requestDraftInitialization.mockImplementation((binding) => {
+        expect(binding.sessionId).toBe(sid('branch'))
+        expect(previous.release).not.toHaveBeenCalled()
+        expect(JSON.parse(backing.get('dsh.sessions.current')!)).toEqual({ sessionId: sid('previous') })
+        return 'applied'
+      })
+      const draft = { prompt: 'edit me', clearPreviousDraft: true }
+
+      b.uiWorkspace.openSession(sid('branch'), draft)
+
+      expect(b.requestDraftInitialization).toHaveBeenCalledExactlyOnceWith(b.sessions.retained[1]!.reference.binding, draft)
+      expect(previous.release).toHaveBeenCalledOnce()
+      expect(JSON.parse(backing.get('dsh.sessions.current')!)).toEqual({ sessionId: sid('branch') })
+      expect(b.notify).not.toHaveBeenCalled()
+    })
+
+    it('keeps the previous selection and releases the target when the draft is blocked', () => {
+      const backing = persistSelection({})
+      const b = bench()
+      b.uiWorkspace.openSession(sid('previous'))
+      b.requestDraftInitialization.mockReturnValue('blocked')
+
+      expect(() => { b.uiWorkspace.openSession(sid('branch'), { prompt: 'edit me' }) })
+        .toThrow('Could not fill the draft. Please try again shortly.')
+
+      expect(b.notify).toHaveBeenCalledExactlyOnceWith({
+        kind: 'createFailed', message: 'Could not fill the draft. Please try again shortly.',
+      })
+      expect(b.sessions.retained[0]!.release).not.toHaveBeenCalled()
+      expect(b.sessions.retained[1]!.release).toHaveBeenCalledOnce()
+      expect(JSON.parse(backing.get('dsh.sessions.current')!)).toEqual({ sessionId: sid('previous') })
+    })
+
+    it('reports a target that resolved no binding', () => {
+      const b = bench()
+      b.sessions.binding.mockReturnValueOnce(undefined)
+
+      expect(() => { b.uiWorkspace.openSession(sid('branch'), { prompt: 'edit me' }) }).toThrow('Could not fill the draft.')
+      expect(b.requestDraftInitialization).not.toHaveBeenCalled()
+      expect(b.sessions.retained[0]!.release).toHaveBeenCalledOnce()
+    })
+  })
+
   describe('startSession draft initialization', () => {
     it.each<{ name: string; options: DraftInitializationOptions }>([
       { name: 'plain text', options: { prompt: '草稿 🧭\nsecond line', clearPreviousDraft: true } },
