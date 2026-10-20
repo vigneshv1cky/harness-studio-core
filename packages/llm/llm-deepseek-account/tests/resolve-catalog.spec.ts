@@ -47,7 +47,7 @@ describe('with a listing', () => {
     expect(catalog.offered.map(model => model.id)).toEqual(['deepseek-v4-pro', 'deepseek-flash'])
     expect(catalog.offered[1]).toEqual({
       id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', contextWindow: 1_048_576, maxTokens: 256_000,
-      inputModalities: ['text', 'image'], systemPromptUpdate: 'in-history', toolUpdate: 'addition-only',
+      inputModalities: ['text', 'image'], systemPromptUpdate: 'in-history', toolUpdate: 'addition-only', reasoningHistory: 'current-turn',
       imageMaxBytes: DEFAULT_REQUEST_IMAGE_MAX_BYTES,
     })
     expect(catalog.offered[0]).not.toHaveProperty('systemPromptUpdate')

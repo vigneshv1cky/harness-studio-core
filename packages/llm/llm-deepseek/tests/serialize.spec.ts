@@ -429,6 +429,41 @@ describe('Messages request conversion', () => {
   })
 })
 
+describe('earlier-turn thinking', () => {
+  const currentTurn = resolveAdapterOptions({ models: [{ id: MODEL, reasoningHistory: 'current-turn' }] })
+  const think = (text: string): ContentBlock => ({ type: 'reasoning', text })
+  const answer = (text: string): ContentBlock => ({ type: 'text', text })
+  const notice = () => createUserMessage({ source: { kind: 'time-context' }, content: [answer('notice')] })
+  const thinking = (messages: RequestMessage[], route = currentTurn) => serialize(
+    options({ messages }), route, messages, new Map(), () => undefined,
+  ).messages.map(message => message.content.filter(block => block.type === 'thinking').map(block => block.thinking))
+
+  it('omits thinking before the last user message without a tool result and keeps the current turn across tool results and notices', () => {
+    const history = [
+      user('first'), assistant([think('t1'), call('a')]), result('a'), assistant([think('t1b'), answer('done')]),
+      user('second'), assistant([think('t2'), call('b')]), result('b'), notice(), assistant([think('t2b'), answer('next')]),
+    ]
+    expect(thinking(history)).toEqual([[], [], [], [], [], ['t2'], [], ['t2b']])
+    expect(thinking(history, connection)).toEqual([[], ['t1'], [], ['t1b'], [], ['t2'], [], ['t2b']])
+    const request = serialize(options({ messages: history }), currentTurn, history, new Map(), () => undefined)
+    expect(request.messages[1]).toEqual({ role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'read', input: { path: 'a' } }] })
+    expect(history[1]?.content).toEqual([think('t1'), call('a')])
+  })
+
+  it('keeps an earlier thinking-only message and everything when no user message starts a turn', () => {
+    expect(thinking([user('first'), assistant([think('only')]), user('second'), assistant([think('now'), answer('a')])]))
+      .toEqual([[], ['only'], [], ['now']])
+    expect(thinking([assistant([think('t0'), answer('a')]), user(), assistant([think('t1'), answer('b')])]))
+      .toEqual([[], [], ['t1']])
+    expect(thinking([assistant([think('t0'), answer('a')])])).toEqual([['t0']])
+  })
+
+  it('is declared by the default flash route only', () => {
+    expect(connection.models.find(model => model.id === 'deepseek-flash')?.reasoningHistory).toBe('current-turn')
+    expect(connection.models.find(model => model.id === 'deepseek-v4-pro')).not.toHaveProperty('reasoningHistory')
+  })
+})
+
 describe('validated configuration', () => {
   it('advertises exact model metadata and allows unlisted text models', () => {
     expect(modelInfo(connection, 'deepseek-official', MODEL)).toMatchObject({ context: { contextWindow: 1_000_000 }, defaultMaxTokens: 256_000, reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }, { id: 'max' }], defaultEffort: 'high' } })
@@ -454,6 +489,7 @@ describe('validated configuration', () => {
     { maxTokens: 0 }, { streamIdleTimeoutMs: 0 },
     { models: [{ id: MODEL, systemPromptUpdate: 'unsupported' }] },
     { models: [{ id: MODEL, toolUpdate: 'unsupported' }] },
+    { models: [{ id: MODEL, reasoningHistory: 'all-turns' }] },
   ])('rejects invalid composition input %#', (value) => {
     expect(() => resolveAdapterOptions(value as Config)).toThrow()
   })

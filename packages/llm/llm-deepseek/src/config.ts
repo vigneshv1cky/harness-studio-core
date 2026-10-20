@@ -79,6 +79,7 @@ export const catalogModelFields = {
   imageMaxBytes: z.number().step(1).min(1),
   systemPromptUpdate: z.const('in-history'),
   toolUpdate: z.union(['in-history', 'addition-only'] as const),
+  reasoningHistory: z.const('current-turn'),
 }
 
 const catalogModel: z<DeepSeekCatalogModel> = z.object({
@@ -177,6 +178,10 @@ function resolveModels(models: readonly DeepSeekCatalogModel[] | undefined): Dee
     if (toolUpdate !== undefined && toolUpdate !== 'in-history' && toolUpdate !== 'addition-only') {
       throw new Error(`llm-deepseek: catalog model "${model.id}" toolUpdate must be "in-history" or "addition-only" when present`)
     }
+    const reasoningHistory: string | undefined = model.reasoningHistory
+    if (reasoningHistory !== undefined && reasoningHistory !== 'current-turn') {
+      throw new Error(`llm-deepseek: catalog model "${model.id}" reasoningHistory must be "current-turn" when present`)
+    }
     if (seen.has(model.id)) throw new Error(`llm-deepseek: duplicate catalog model "${model.id}"`)
     seen.add(model.id)
     return {
@@ -187,6 +192,7 @@ function resolveModels(models: readonly DeepSeekCatalogModel[] | undefined): Dee
       ...model.maxTokens === undefined ? {} : { maxTokens: model.maxTokens },
       ...model.systemPromptUpdate === undefined ? {} : { systemPromptUpdate: model.systemPromptUpdate },
       ...model.toolUpdate === undefined ? {} : { toolUpdate: model.toolUpdate },
+      ...model.reasoningHistory === undefined ? {} : { reasoningHistory: model.reasoningHistory },
       inputModalities: [...inputModalities],
       ...hasImage
         ? {

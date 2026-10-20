@@ -40,6 +40,14 @@ export interface DeepSeekCatalogModel {
    * complete tool list on every request.
    */
   toolUpdate?: ToolUpdate
+  /**
+   * `'current-turn'` declares that the endpoint accepts history whose
+   * assistant messages before the last user message without a tool result
+   * carry no thinking blocks; the request then omits those blocks, except in
+   * an assistant message holding only thinking. Omission passes every
+   * turn's thinking back.
+   */
+  reasoningHistory?: 'current-turn'
 }
 
 /**

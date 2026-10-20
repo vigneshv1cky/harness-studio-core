@@ -38,10 +38,25 @@ function assistant(message: Message, model: string, onReplayDegrade?: (reason: s
   })
 }
 
+/**
+ * Omit thinking from assistant messages before the current turn, which starts
+ * at the last user message without a tool result; a thinking-only message
+ * keeps its thinking so no message disappears.
+ */
+function omitEarlierThinking(messages: WireMessage[]): void {
+  const start = messages.findLastIndex(message => message.role === 'user' && !message.content.some(block => block.type === 'tool_result'))
+  for (const message of messages.slice(0, Math.max(start, 0))) {
+    if (message.role !== 'assistant') continue
+    const kept = message.content.filter(block => block.type !== 'thinking')
+    if (kept.length > 0) message.content = kept
+  }
+}
+
 /** Serialize one complete request using already prepared image bytes.
  * User and tool-result content omits reasoning and tool-call blocks.
  * Empty assistant text blocks and empty user/assistant messages are skipped;
  * empty tool results retain their call ids.
+ * Routes declaring `reasoningHistory: 'current-turn'` omit thinking before the current turn.
  * Developer messages, already projected for this route by `LlmRuntime`, become
  * system-role updates after the preceding user turn, with tool changes as
  * `tool_addition` and `tool_removal` references to the declared tool.
@@ -128,6 +143,7 @@ export function serialize(
     else messages.push({ role: wireRole, content })
   }
   flushSystemUpdates()
+  if (model?.reasoningHistory === 'current-turn') omitEarlierThinking(messages)
   let pending = new Set<string>()
   for (const message of messages) {
     if (message.role === 'assistant') {

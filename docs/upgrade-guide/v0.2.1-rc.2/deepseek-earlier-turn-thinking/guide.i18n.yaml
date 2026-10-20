@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for guide.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/upgrade-guide/v0.2.1-rc.2/deepseek-earlier-turn-thinking/guide.md
+/:
+  en: 1c3cbffe2182d7ff
+  zh: 1ddd07d8365c603f
+/deepseek-earlier-turn-thinking-omission:
+  en: 70ae9e213120c5a0
+  zh: ab5bfd03df8c47dc
+/deepseek-earlier-turn-thinking-omission/change:
+  en: a2a648d7c5b37e5a
+  zh: aad826ecdeb8bb78
+/deepseek-earlier-turn-thinking-omission/migration:
+  en: e67d67603c987bef
+  zh: a5044c49f40d2e70
