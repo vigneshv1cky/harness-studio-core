@@ -448,8 +448,12 @@
 
     # When an image-capable route rejects a request as over its image budget,
     # replace the oldest images with placeholders on the surface and retry.
+    # Tool-result images (screenshots, rendered frames) also leave requests
+    # after five later model responses; user-attached images stay.
     - id: image-offload
       name: '@deepseek-ai/dsh-compaction-image-offload'
+      config:
+        toolImageMaxAgeSteps: 5
 
     - id: tool-todo
       name: '@deepseek-ai/dsh-tool-todo'

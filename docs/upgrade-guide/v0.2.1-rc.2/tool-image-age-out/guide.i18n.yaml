@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for guide.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/upgrade-guide/v0.2.1-rc.2/tool-image-age-out/guide.md
+/:
+  en: 2aac4caab62f3000
+  zh: 6005f43d548e7cae
+/tool-result-image-age-out:
+  en: 722af7b48205a9b0
+  zh: 6689c7b944fe93a3
+/tool-result-image-age-out/change:
+  en: 246dbb02eb0c16e9
+  zh: a0138bb270abc42e
+/tool-result-image-age-out/migration:
+  en: 1094909128dd9505
+  zh: 605124652b2ab518

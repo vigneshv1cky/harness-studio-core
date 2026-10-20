@@ -229,7 +229,7 @@ describe('model-facing image access', () => {
     }
     expect(offloadedImageText(ref)).toContain('No local normalized image path is available')
     expect(offloadedImageText(ref, { readonlyPath: '/tmp/object' })).toBe(
-      `[image omitted to fit request image limits; "photo.jpg" (${ref.attachmentId}).`
+      `[image omitted from this request; "photo.jpg" (${ref.attachmentId}).`
       + ' Normalized copy (read-only; may be resized or re-encoded): "/tmp/object" (10x5px, image/jpeg).'
       + ' Source dimensions, format, and byte size may differ.'
       + ' Copy to a writable path ending in .jpg before editing.]',

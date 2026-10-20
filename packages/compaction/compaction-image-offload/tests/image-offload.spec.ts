@@ -16,8 +16,9 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { createAssistantMessage, createToolResultMessage, createUserMessage, projectOffloadedImages, offloadedImageText, IMAGE_OFFLOAD_REQUIRED_CODE, LlmAdapter, LlmError, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { isReplacementSurfaceEvent, SessionId } from '@deepseek-ai/dsh-session'
-import type { Session } from '@deepseek-ai/dsh-session'
+import type { Session, SessionSeq } from '@deepseek-ai/dsh-session'
 import * as offload from '../src/index.ts'
+import type {} from '../src/age-out.ts'
 
 type ScriptEntry = StreamChunk[] | (() => never)
 
@@ -64,11 +65,11 @@ function offloadRequired(offloadImages: number): () => never {
   }
 }
 
-async function harness(adapter: ScriptedAdapter): Promise<Context> {
+async function harness(adapter: ScriptedAdapter, config: offload.Config = {}): Promise<Context> {
   const ctx = new Context()
   contexts.push(ctx)
   await mountAgentLoopTestDependencies(ctx)
-  await ctx.plugin(offload)
+  await ctx.plugin(offload, config)
   await ctx.plugin(AgentLoop, { agents: [] })
   ctx.llm.registerAdapter(['mock'], adapter)
   return ctx
@@ -468,5 +469,157 @@ describe('compaction-image-offload', () => {
     expect(delegated).toEqual([IMAGE_OFFLOAD_REQUIRED_CODE])
     expect(replacements(agent.session)).toHaveLength(0)
     expect(agent.session.snapshotEvents().at(-1)).toMatchObject({ type: 'turn/end', data: { reason: { kind: 'error' } } })
+  })
+})
+
+/** Append one completed step whose tool calls return the given contents. */
+function appendToolStep(session: Session, step: number, results: ContentBlock[][]): SessionSeq[] {
+  const ids = results.map((_, index) => ToolCallId(`call-${step}-${index}`))
+  session.append('assistant/message', {
+    turn: 0,
+    step,
+    message: createAssistantMessage({
+      content: ids.map(id => ({ type: 'tool-call' as const, id, name: 'read_image', arguments: '{}' })),
+      source: { provider: 'mock', model: 'mock' },
+    }),
+    stream: [],
+  }, { surfaceOp: 'append' })
+  return results.map((content, index) => {
+    session.append('tool/call', { turn: 0, step, callId: ids[index]!, name: 'read_image', arguments: '{}' })
+    return session.append('tool/result', {
+      turn: 0,
+      step,
+      message: createToolResultMessage({ callId: ids[index]!, content, isError: false }),
+    }, { surfaceOp: 'append' }).seq
+  })
+}
+
+describe('tool-image age-out', () => {
+  async function agedHarness(script: ScriptEntry[], config: offload.Config = { toolImageMaxAgeSteps: 2 }) {
+    const adapter = new ScriptedAdapter(script)
+    const ctx = await harness(adapter, config)
+    const agent = await ctx.agentLoop.create(SessionId('offload-aged'), { provider: 'mock', model: 'mock' })
+    agent.session.append('turn/start', { turn: 0 })
+    const attached = agent.session.append('user/message', createUserMessage({ content: [image('attached')], source: { kind: 'user' } }), { surfaceOp: 'append' }).seq
+    const [oldest, imageless] = appendToolStep(agent.session, 1, [[image('oldest'), image('oldest-second')], [{ type: 'text', text: 'no image' }]])
+    const [older] = appendToolStep(agent.session, 2, [[{ type: 'text', text: 'frame' }, image('older')]])
+    const [recent] = appendToolStep(agent.session, 3, [[image('recent')]])
+    agent.session.append('turn/end', { turn: 0, reason: { kind: 'completed' } })
+    return { ctx, agent, adapter, seqs: { attached, oldest: oldest!, imageless: imageless!, older: older!, recent: recent! } }
+  }
+
+  it('omits tool-result images once enough model responses follow them and keeps user images', async () => {
+    const { agent, adapter, seqs } = await agedHarness(['first', 'second', 'third', 'fourth'].map(textResponse))
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'continue' }], source: { kind: 'user' } }))
+    await agent.whenIdle()
+    expect(offloadedNames(adapter.requests[0]!)).toEqual(['oldest', 'oldest-second'])
+    expect(decisions(agent.session).map(event => event.data.targets)).toEqual([
+      [{ seq: seqs.oldest, imageIndexes: [0, 1] }],
+    ])
+
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'again' }], source: { kind: 'user' } }))
+    await agent.whenIdle()
+    expect(offloadedNames(adapter.requests[1]!)).toEqual(['oldest', 'oldest-second', 'older'])
+    expect(decisions(agent.session).map(event => event.data.targets)).toEqual([
+      [{ seq: seqs.oldest, imageIndexes: [0, 1] }],
+      [{ seq: seqs.older, imageIndexes: [0] }],
+    ])
+
+    for (const text of ['third', 'fourth']) {
+      agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+      await agent.whenIdle()
+    }
+    expect(adapter.requests.slice(2).map(offloadedNames)).toEqual([
+      ['oldest', 'oldest-second', 'older', 'recent'], ['oldest', 'oldest-second', 'older', 'recent'],
+    ])
+    expect(decisions(agent.session).at(-1)?.data.targets).toEqual([{ seq: seqs.recent, imageIndexes: [0] }])
+    expect(decisions(agent.session)).toHaveLength(3)
+    const types = agent.session.snapshotEvents().map(event => event.type)
+    expect(types).not.toContain('compaction/prune')
+    expect(replacements(agent.session)).toHaveLength(0)
+    expect(agent.session.deriveMessages().flatMap(message => message.content)).toContainEqual(image('attached'))
+  })
+
+  it('selects only images not already omitted within a message', async () => {
+    const { agent, adapter, seqs } = await agedHarness([textResponse('done')], { toolImageMaxAgeSteps: 1 })
+    agent.session.append('image/offload', { targets: [{ seq: seqs.attached, imageIndexes: [0] }] })
+    agent.session.append('image/offload', { targets: [{ seq: seqs.oldest, imageIndexes: [0] }] })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'continue' }], source: { kind: 'user' } }))
+    await agent.whenIdle()
+    expect(offloadedNames(adapter.requests[0]!)).toEqual(['attached', 'oldest', 'oldest-second', 'older'])
+    expect(decisions(agent.session).at(-1)?.data.targets).toEqual([
+      { seq: seqs.oldest, imageIndexes: [1] }, { seq: seqs.older, imageIndexes: [0] },
+    ])
+  })
+
+  it('follows a replaced tool result and forgets one condensed away', async () => {
+    const { agent, adapter, seqs } = await agedHarness(['first', 'second', 'third'].map(textResponse))
+    const recent = agent.session.eventAt(seqs.recent)
+    if (recent?.type !== 'tool/result') throw new Error('expected the recent tool result')
+    const message = { ...recent.data.message, content: [{ ...image('stale'), offloaded: true as const }, ...recent.data.message.content] }
+    const replacement = agent.session.append('tool/result', { ...recent.data, message }, {
+      surfaceOp: { op: 'replace', startSeq: seqs.recent, endSeq: seqs.recent },
+      sourceEventSeqs: [seqs.recent],
+    }).seq
+    agent.session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'summary' }], source: { kind: 'user' } }), {
+      surfaceOp: { op: 'replace', startSeq: seqs.older, endSeq: seqs.older },
+      sourceEventSeqs: [seqs.older],
+    })
+    agent.session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'no images here' }], source: { kind: 'user' } }), {
+      surfaceOp: { op: 'replace', startSeq: seqs.imageless, endSeq: seqs.imageless },
+      sourceEventSeqs: [seqs.imageless],
+    })
+    for (const text of ['continue', 'again', 'once more']) {
+      agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+      await agent.whenIdle()
+    }
+    expect(adapter.requests.map(offloadedNames)).toEqual([
+      ['oldest', 'oldest-second', 'stale'], ['oldest', 'oldest-second', 'stale'], ['oldest', 'oldest-second', 'stale', 'recent'],
+    ])
+    expect(decisions(agent.session).map(event => event.data.targets)).toEqual([
+      [{ seq: seqs.oldest, imageIndexes: [0, 1] }],
+      [{ seq: replacement, imageIndexes: [1] }],
+    ])
+  })
+
+  it.each([{}, { toolImageMaxAgeSteps: 0 }])('records nothing without a positive setting: %j', async (config) => {
+    const { agent, adapter } = await agedHarness([textResponse('done')], config)
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'continue' }], source: { kind: 'user' } }))
+    await agent.whenIdle()
+    expect(offloadedNames(adapter.requests[0]!)).toEqual([])
+    expect(decisions(agent.session)).toEqual([])
+  })
+
+  it('records nothing for a cancelled step', async () => {
+    const { ctx, agent } = await agedHarness([])
+    const controller = new AbortController()
+    controller.abort()
+    await ctx.waterfall('agent/pre-step', { agent, messages: [], turn: 1, step: 1, signal: controller.signal }, () => Promise.resolve({ kind: 'enter' as const, messages: [] }))
+    expect(decisions(agent.session)).toEqual([])
+  })
+
+  it('rejects a negative or fractional age', () => {
+    expect(() => offload.Config({ toolImageMaxAgeSteps: -1 })).toThrow()
+    expect(() => offload.Config({ toolImageMaxAgeSteps: 1.5 })).toThrow()
+    expect(offload.Config({ toolImageMaxAgeSteps: 5 })).toEqual({ toolImageMaxAgeSteps: 5 })
+  })
+
+  it('removes the step hook when its plugin is disposed', async () => {
+    const ctx = new Context()
+    contexts.push(ctx)
+    await mountAgentLoopTestDependencies(ctx)
+    const fiber = ctx.plugin(offload, { toolImageMaxAgeSteps: 1 })
+    await fiber
+    await fiber.dispose()
+    const adapter = new ScriptedAdapter([textResponse('done')])
+    ctx.llm.registerAdapter(['mock'], adapter)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    const agent = await ctx.agentLoop.create(SessionId('offload-aged-unloaded'), { provider: 'mock', model: 'mock' })
+    appendToolStep(agent.session, 1, [[image('kept')]])
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'continue' }], source: { kind: 'user' } }))
+    await agent.whenIdle()
+    expect(offloadedNames(adapter.requests[0]!)).toEqual([])
+    expect(decisions(agent.session)).toEqual([])
+    expect(ctx.sessionProjections.stateOf(agent.session, 'toolImageAge')).toBeUndefined()
   })
 })

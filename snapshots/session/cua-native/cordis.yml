@@ -40,3 +40,9 @@
 - insert:
     - id: cua-consent-fixture
       name: './consent-fixture.mjs'
+
+# Keep every screenshot in requests; snapshots/sdk/minimal-image-age-out covers tool-image age-out.
+- id: image-offload
+  name: '@deepseek-ai/dsh-compaction-image-offload'
+  config:
+    toolImageMaxAgeSteps: 0

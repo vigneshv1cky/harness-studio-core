@@ -131,6 +131,10 @@ const SDK_ASSERTIONS: Readonly<Record<string, SdkAssertions>> = {
     expectedFinalResponse: 'MINIMAL_IMAGE_OK',
     expectedTools: { bash: ['command'], read_image: ['file_path'], working_directory: [] },
   },
+  'minimal-image-age-out': {
+    expectedFinalResponse: 'MINIMAL_AGE_OK',
+    expectedTools: { bash: ['command'], read_image: ['file_path'], working_directory: [] },
+  },
   'session-title-stability': { waitForProviderTitle: true },
   'dynamic-tool-updates': {
     expectedFinalResponse: 'DONE',
@@ -981,6 +985,16 @@ describe('TypeScript SDK snapshots over the jsonrpc runtime', () => {
         expect(subscribed).toEqual(summaries)
         expect(events.findLastIndex(event => event.type === 'assistant/message'))
           .toBeGreaterThan(events.findIndex(event => event.type === 'compaction/summary'))
+      }
+      if (scenario.name === 'minimal-image-age-out') {
+        const events = results.flatMap(result => result.events)
+        const imageSeq = events.find(event => event.type === 'tool/result')?.seq
+        const offloads = events.filter(event => event.type === 'image/offload')
+        expect(offloads).toHaveLength(1)
+        expect(offloads[0]).toMatchObject({ data: { targets: [{ seq: imageSeq, imageIndexes: [0] }] } })
+        const steps = events.filter(event => event.type === 'step/start').map(event => event.seq)
+        expect(offloads[0]!.seq).toBeGreaterThan(steps[1]!)
+        expect(offloads[0]!.seq).toBeLessThan(steps[2]!)
       }
       expect(logs.some(log => log.content.includes('llm-replay: script exhausted')), `${scenario.name}: replay script covers every model request`).toBe(false)
       if (scenario.name === 'subagent-dsh-sdk-diagnostic' || scenario.name === 'subagent-dsh-sdk-dynamic-route') {

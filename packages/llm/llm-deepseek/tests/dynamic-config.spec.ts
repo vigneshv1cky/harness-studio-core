@@ -245,7 +245,7 @@ describe('request-level dynamic configuration', () => {
     const second = (server.requests[1] as { messages: Array<{ content: unknown }> }).messages[0]?.content
     expect(server.requests).toHaveLength(2)
     expect(JSON.stringify(first).match(/"type":"image"/g)).toHaveLength(2)
-    expect(JSON.stringify(second)).toContain('[image omitted to fit request image limits')
+    expect(JSON.stringify(second)).toContain('[image omitted from this request')
     expect(JSON.stringify(second)).toContain(MODEL_IMAGE_PATH)
     expect(JSON.stringify(second).match(/"type":"image"/g)).toHaveLength(1)
   })

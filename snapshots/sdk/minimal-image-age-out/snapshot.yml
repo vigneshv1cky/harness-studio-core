@@ -1,0 +1,8 @@
+version: 1
+scenario: minimal-image-age-out
+profile: sdk-minimal
+composition: sdk-minimal-image-age-out
+recording: authored
+header:
+  class: sdk-minimal-image-age-out
+  pin: true

@@ -662,7 +662,7 @@ describe('DeepSeekAdapter against a mock server', () => {
     expect(body.messages[0]).toMatchObject({
       role: 'user',
       content: [
-        { type: 'text', text: expect.stringContaining(`image omitted to fit request image limits; ${old.attachmentId}`) as string },
+        { type: 'text', text: expect.stringContaining(`image omitted from this request; ${old.attachmentId}`) as string },
         { type: 'text', text: expect.stringContaining(String(recent.attachmentId)) as string },
         { type: 'image', source: { type: 'file', file_id: 'file-api-1' } },
       ],

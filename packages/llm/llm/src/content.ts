@@ -100,7 +100,7 @@ export function requestImageHandleText(
 }
 
 /**
- * Stable per-image placeholder for a request-limit omission.
+ * Stable per-image placeholder for an image occurrence omitted by a logged image-offload decision.
  * @param ref - durable normalized attachment omitted from this request.
  * @param access - optional provider-resolved path for model tools.
  * @returns identity, normalized metadata, and the available recovery path.
@@ -109,7 +109,7 @@ export function offloadedImageText(
   ref: ImageAttachmentRef,
   access?: ImageAttachmentAccess,
 ): string {
-  const identity = `image omitted to fit request image limits; ${imageIdentity(ref)}.`
+  const identity = `image omitted from this request; ${imageIdentity(ref)}.`
   if (access === undefined) {
     return `[${identity} No local normalized image path is available; ask the user to attach it again if needed.]`
   }

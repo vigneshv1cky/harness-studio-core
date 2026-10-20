@@ -9,26 +9,26 @@
   en: 943faf0e7d54c535
   zh: 9d62398ac8842657
 /deepseek-ai-dsh-compaction-image-offload/summary:
-  en: 8881f7155e7f99c7
-  zh: 1e01354c7a7b1e68
+  en: c81f3d1b567e5d41
+  zh: d2838c06a0592f57
 /deepseek-ai-dsh-compaction-image-offload/table-of-contents:
   en: d152484eb41ac6b4
   zh: 09388d293f9be9cb
 /deepseek-ai-dsh-compaction-image-offload/use-this-package:
-  en: 4e36e8e742bc94ed
-  zh: ca42226676c9da28
+  en: dec25d8870bd58eb
+  zh: b9428724c16d6d90
 /deepseek-ai-dsh-compaction-image-offload/use-this-package/minimal-configuration:
   en: 7e32fdf2571d190c
   zh: 6b455c98d3afa3e0
 /deepseek-ai-dsh-compaction-image-offload/use-this-package/what-you-can-observe:
-  en: 6a156ba4e44b520a
-  zh: a61fc63697f85095
+  en: 0b27fe4dc731ee53
+  zh: dd119a9f33b076e6
 /deepseek-ai-dsh-compaction-image-offload/use-this-package/failures-and-recovery:
   en: 453802a8e8338955
   zh: c49c3d1871cca863
 /deepseek-ai-dsh-compaction-image-offload/understand-the-implementation:
-  en: 61d7de1373f1c420
-  zh: bec696992dfa774a
+  en: ff7211d419f6ec4f
+  zh: b48c7ce3c8753e4e
 /deepseek-ai-dsh-compaction-image-offload/further-exploration:
   en: 081a5eafe9160c31
   zh: a4ed86e9389c91d0
@@ -39,14 +39,14 @@
   en: e57e89ce994680bd
   zh: b31ac5142af08695
 /deepseek-ai-dsh-compaction-image-offload/model-experience/offloaded-request-images/what-the-model-sees:
-  en: 54a927e19008dd58
-  zh: 45ec6d988b73e2fb
+  en: 825e976ce3456524
+  zh: 9107e6a129136053
 /deepseek-ai-dsh-compaction-image-offload/model-experience/offloaded-request-images/token-effect:
   en: a1a6386bbdad684e
   zh: 09a1f02f013390cd
 /deepseek-ai-dsh-compaction-image-offload/model-experience/offloaded-request-images/kv-cache-effect:
-  en: 1ddf05ccd042aa85
-  zh: 0f2984a2e6b8c5c7
+  en: 2ff948222b1b7173
+  zh: b64af9bd8c7f47e1
 /deepseek-ai-dsh-compaction-image-offload/known-limitations-and-deferred-work:
   en: 56e34b1ca548fa07
   zh: 8ad247f5251a5461

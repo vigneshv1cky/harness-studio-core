@@ -132,7 +132,7 @@ describe('Messages Files requests', () => {
     ] }] })))
     const fallback = body(fetchImpl.mock.calls[1]?.[1])
     expect(fallback.match(/"type":"base64"/gu)).toHaveLength(1)
-    expect(fallback).toContain('image omitted to fit request image limits')
+    expect(fallback).toContain('image omitted from this request')
     expect(JSON.stringify(original.messages)).toBe(saved)
   })
 
@@ -176,7 +176,7 @@ describe('Messages Files requests', () => {
       () => ({ readonlyPath: '/workspace/image.png' }), new AbortController().signal)
     expect(prepared.versions.size).toBe(0)
     expect(prepared.messages[0]?.content).toMatchObject([
-      { type: 'text', text: expect.stringContaining('image omitted to fit request image limits') as string },
+      { type: 'text', text: expect.stringContaining('image omitted from this request') as string },
     ])
     expect(JSON.stringify(prepared.messages)).toContain('/workspace/image.png')
     expect(messages[0]?.content).toMatchObject([{ type: 'image', offloaded: true }])

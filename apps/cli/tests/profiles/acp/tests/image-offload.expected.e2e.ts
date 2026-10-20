@@ -137,7 +137,7 @@ it('pins Messages Files offload and inline fallback in assembled requests', asyn
     }
     const normalizedAccess = accessText(result.cwd)
     const fileImage = { type: 'image', source: { type: 'file', file_id: 'file-api-snapshot-1' } }
-    const offloadedImage = `[image omitted to fit request image limits; ${attachmentId}.${normalizedAccess}]`
+    const offloadedImage = `[image omitted from this request; ${attachmentId}.${normalizedAccess}]`
     const imageHandle = `Image ${attachmentId}; request preview 1x1px.${normalizedAccess}`
     const runtimeContext = (cwd: string): string => 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n'
       + `Current working directory: ${JSON.stringify(cwd)}.\n\n`
@@ -198,7 +198,7 @@ it('pins Messages Files offload and inline fallback in assembled requests', asyn
     const fallbackAccess = accessText(fallback.cwd)
     expect(fallbackInput?.content).toEqual([
       { type: 'text', text: 'Compare the older image ' },
-      { type: 'text', text: `[image omitted to fit request image limits; ${attachmentId}.${fallbackAccess}]` },
+      { type: 'text', text: `[image omitted from this request; ${attachmentId}.${fallbackAccess}]` },
       { type: 'text', text: ' with the newer image ' },
       { type: 'text', text: `Image ${attachmentId}; request preview 1x1px.${fallbackAccess}` },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: image } },
