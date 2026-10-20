@@ -21,7 +21,7 @@ import {
 } from './windows-sign.mjs'
 import { resolveDesktopAutoUpdateConfig } from './desktop-auto-update-environment.mjs'
 import { resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
-import { resolveDesktopBuildVersion } from './desktop-build-version.mjs'
+import { resolveDesktopAppVersion } from './desktop-build-version.mjs'
 import { resolveDesktopPolicyEnvironment } from './desktop-policy-environment.mjs'
 import { desktopArtifactOutput, desktopTargetBuildPaths, resolveDesktopBuildTarget } from './desktop-build-paths.mjs'
 import { installWindowsDirectoryInstaller } from './windows-directory-installer.mjs'
@@ -102,7 +102,8 @@ export function createElectronBuilderConfig(
   // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
   // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
   const productVersion = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version
-  const buildVersion = resolveDesktopBuildVersion(env, productVersion)
+  // Harness Studio: a Studio build stamps its own release here (HARNESS_STUDIO_VERSION); the bundled runtime keeps productVersion.
+  const buildVersion = resolveDesktopAppVersion(env, productVersion)
   if (update?.channel === 'latest' && buildVersion.includes('-')) throw new Error('desktop package: latest requires a stable version')
   const packaged = resolveDesktopBuildCommit(env)
   return {

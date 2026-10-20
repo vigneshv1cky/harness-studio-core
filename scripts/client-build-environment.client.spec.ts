@@ -9,6 +9,7 @@ import {
   clientBuildEnvironmentDefines,
   clientBuildProcessEnvironment,
   clientBuildValueDefines,
+  clientVersion,
   officialClientBuildEnvironment,
   readClientBuildRecord,
   repositoryClientBuildEnvironment,
@@ -214,6 +215,28 @@ describe('client build environment', () => {
       DSH_CLIENT_COMMIT_HASH: COMMIT_HASH.slice(0, 7),
       DSH_CLIENT_VERSION: '2.0.0',
     })
+  })
+
+  it('reports a Harness Studio release in place of the repository version', () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'dsh-client-build-studio-'))
+    roots.push(fixtureRoot)
+    write(join(fixtureRoot, 'package.json'), '{"version":"0.2.1-rc.2"}\n')
+
+    expect(clientVersion(fixtureRoot, {})).toBe('0.2.1-rc.2')
+    expect(clientVersion(fixtureRoot, { HARNESS_STUDIO_VERSION: ' ' })).toBe('0.2.1-rc.2')
+    expect(clientVersion(fixtureRoot, { HARNESS_STUDIO_VERSION: '0.3.2' })).toBe('0.3.2')
+    expect(() => clientVersion(fixtureRoot, { HARNESS_STUDIO_VERSION: 'v0.3.2' })).toThrow(/HARNESS_STUDIO_VERSION/)
+    expect(repositoryClientBuildEnvironment(fixtureRoot, {
+      DSH_CLIENT_COMMIT_HASH: COMMIT_HASH,
+      HARNESS_STUDIO_VERSION: '0.3.2',
+    })).toEqual({
+      DSH_CLIENT_COMMIT_HASH: COMMIT_HASH.slice(0, 7),
+      DSH_CLIENT_VERSION: '0.3.2',
+    })
+    expect(officialClientBuildEnvironment(fixtureRoot, {
+      DSH_CLIENT_COMMIT_HASH: COMMIT_HASH,
+      HARNESS_STUDIO_VERSION: '0.3.2',
+    })).toMatchObject({ DSH_CLIENT_VERSION: '0.3.2' })
   })
 
   it('defines only public client values over a non-enumerable fallback', () => {

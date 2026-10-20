@@ -28,6 +28,15 @@ const CLIENT_COMMIT_HASH_VARIABLE = 'DSH_CLIENT_COMMIT_HASH'
 /** Public variable carrying the repository package version embedded in client artifacts. */
 const CLIENT_VERSION_VARIABLE = 'DSH_CLIENT_VERSION'
 
+/**
+ * Harness Studio: variable carrying the Harness Studio release that client artifacts report in place of the repository
+ * version. The dsh runtime keeps the repository version, which plugins' `engines.dsh` ranges are checked against.
+ */
+export const STUDIO_VERSION_VARIABLE = 'HARNESS_STUDIO_VERSION'
+
+/** Semver-compatible version without build metadata. */
+const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+
 /** Repository-relative path of the complete client build record. */
 export const CLIENT_BUILD_RECORD_PATH = '.dsh-build/client-build-environment.json'
 
@@ -77,10 +86,25 @@ export function repositoryVersion(root: string): string {
     throw new Error(`cannot read repository version from ${path}: ${detail}`)
   }
   if (!isObject(manifest) || typeof manifest.version !== 'string'
-    || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version)) {
+    || !VERSION_PATTERN.test(manifest.version)) {
     throw new Error(`repository package.json has an invalid version ${JSON.stringify(isObject(manifest) ? manifest.version : undefined)}`)
   }
   return manifest.version
+}
+
+/**
+ * Resolve the version client artifacts carry.
+ * @param root - repository root containing the authoritative package.json.
+ * @param environment - environment that may carry a Harness Studio release.
+ * @returns the Harness Studio release when a Studio build supplies one, otherwise the repository version.
+ */
+export function clientVersion(root: string, environment: NodeJS.ProcessEnv = process.env): string {
+  const studio = environment[STUDIO_VERSION_VARIABLE]?.trim()
+  if (studio === undefined || studio === '') return repositoryVersion(root)
+  if (!VERSION_PATTERN.test(studio)) {
+    throw new Error(`${STUDIO_VERSION_VARIABLE} must be a semantic version; got ${JSON.stringify(studio)}`)
+  }
+  return studio
 }
 
 /**
@@ -128,7 +152,7 @@ export function repositoryClientBuildEnvironment(
     ...inherited,
     DSH_CLIENT_COMMIT_HASH: repositoryCommitHash(root, environment),
     ...(dirty === true ? { DSH_CLIENT_GIT_DIRTY: 'true' } : {}),
-    DSH_CLIENT_VERSION: repositoryVersion(root),
+    DSH_CLIENT_VERSION: clientVersion(root, environment),
   }
 }
 
@@ -144,7 +168,7 @@ export function officialClientBuildEnvironment(
 ): Readonly<Record<`DSH_CLIENT_${string}`, string>> {
   return {
     DSH_CLIENT_COMMIT_HASH: repositoryCommitHash(root, environment),
-    DSH_CLIENT_VERSION: repositoryVersion(root),
+    DSH_CLIENT_VERSION: clientVersion(root, environment),
     ...OFFICIAL_CLIENT_BUILD_ENVIRONMENT,
   }
 }

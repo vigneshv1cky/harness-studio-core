@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   DESKTOP_BUILD_VERSION_ENV,
+  STUDIO_VERSION_ENV,
   desktopBuildVersionPrefix,
+  resolveDesktopAppVersion,
   resolveDesktopBuildVersion,
   validateDesktopBuildVersion,
 } from '../scripts/desktop-build-version.mjs'
@@ -62,4 +64,16 @@ describe('desktop build version', () => {
     'opens %s build versions with %s', (productVersion, prefix) => {
       expect(desktopBuildVersionPrefix(productVersion)).toBe(prefix)
     })
+
+  it('stamps a Harness Studio release on the app in place of the product version', () => {
+    expect(resolveDesktopAppVersion({}, PRERELEASE)).toBe(PRERELEASE)
+    expect(resolveDesktopAppVersion({ [DESKTOP_BUILD_VERSION_ENV]: '0.1.6-alpha.2.20260921.1' }, PRERELEASE))
+      .toBe('0.1.6-alpha.2.20260921.1')
+    expect(resolveDesktopAppVersion({ [STUDIO_VERSION_ENV]: '0.3.2' }, PRERELEASE)).toBe('0.3.2')
+    expect(() => resolveDesktopAppVersion({ [STUDIO_VERSION_ENV]: '0.3.2+1' }, PRERELEASE)).toThrow(/build metadata/u)
+    expect(() => resolveDesktopAppVersion({ [STUDIO_VERSION_ENV]: 'latest' }, PRERELEASE)).toThrow(/is not a version/u)
+    // Packaging always sets the build version, so the Studio release takes precedence over it.
+    expect(resolveDesktopAppVersion({ [STUDIO_VERSION_ENV]: '0.3.2', [DESKTOP_BUILD_VERSION_ENV]: PRERELEASE }, PRERELEASE))
+      .toBe('0.3.2')
+  })
 })

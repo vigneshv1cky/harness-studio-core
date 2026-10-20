@@ -28,6 +28,13 @@ import { parse } from 'semver'
 /** Environment variable that carries the build version through one packaging and upload run. */
 export const DESKTOP_BUILD_VERSION_ENV = 'DSH_DESKTOP_BUILD_VERSION'
 
+/**
+ * Harness Studio: environment variable carrying the Harness Studio release a Studio build stamps on the app, in place
+ * of Harness's own version. The bundled dsh runtime keeps Harness's version, which plugins' `engines.dsh` ranges are
+ * checked against.
+ */
+export const STUDIO_VERSION_ENV = 'HARNESS_STUDIO_VERSION'
+
 /** Prerelease field that opens a test build's suffix on a stable product version. */
 const STABLE_TEST_FIELD = 'test'
 
@@ -90,6 +97,20 @@ export function resolveDesktopBuildVersion(env, productVersion) {
   const buildVersion = env[DESKTOP_BUILD_VERSION_ENV]?.trim()
   if (buildVersion === undefined || buildVersion === '') return productVersion
   return validateDesktopBuildVersion(buildVersion, productVersion)
+}
+
+/**
+ * Resolve the version the packaged app carries: the Harness Studio release when a Studio build supplies one, in
+ * preference to any build version, otherwise the version this build publishes.
+ * @param {NodeJS.ProcessEnv} env - Packaging environment.
+ * @param {string} productVersion - Version the manifests declare.
+ * @returns {string} The app version electron-builder stamps on the app and its artifacts.
+ */
+export function resolveDesktopAppVersion(env, productVersion) {
+  const studioVersion = env[STUDIO_VERSION_ENV]?.trim()
+  if (studioVersion === undefined || studioVersion === '') return resolveDesktopBuildVersion(env, productVersion)
+  // Packaging always sets DESKTOP_BUILD_VERSION_ENV, to the product version unless asked otherwise; Studio's release wins.
+  return parseVersion(studioVersion, 'Harness Studio version').version
 }
 
 /**
