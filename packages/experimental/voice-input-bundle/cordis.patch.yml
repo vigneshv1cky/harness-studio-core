@@ -7,6 +7,8 @@
       name: '@deepseek-ai/dsh-experimental-speech-to-text-sensevoice'
       config:
         dataRoot: !!js dshHomePath('speech-to-text', 'sensevoice')
+        # Harness Studio: release the loaded model (about 310 MB) after one idle minute instead of five.
+        idleTimeoutMs: 60000
     - id: api-speech-to-text
       name: '@deepseek-ai/dsh-experimental-api-speech-to-text'
     - id: ui-voice-input
