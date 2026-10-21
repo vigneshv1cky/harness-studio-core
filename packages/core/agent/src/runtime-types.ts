@@ -336,6 +336,20 @@ declare module '@deepseek-ai/cordis' {
     */
     'agent/request'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; step: number; signal: AbortSignal }, next: () => Promise<LlmCallConfig>): Promise<LlmCallConfig>
     /**
+     * Report the provider/model pair a model selection routes the agent's
+     * requests to, so a plugin that sizes work against the model measures the
+     * one that follows a switch instead of the one that produced the latest
+     * request header. Dispatching it starts no request and changes no state.
+     * The default `undefined` means no selection overrides the route; callers
+     * then use the latest request header.
+     * @param payload.agent - the agent whose route is asked for.
+     * @param payload.pending - true for the selection the next prompt assembly takes (an idle agent);
+     *   false for the one the current step's assembly captured.
+     * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
+     * @mode waterfall
+     */
+    'agent/model-selection'(this: Scoped<Agent>, payload: { agent: Agent; pending: boolean }, next: () => Promise<Pick<LlmCallConfig, 'provider' | 'model'> | undefined>): Promise<Pick<LlmCallConfig, 'provider' | 'model'> | undefined>
+    /**
      * Handle one failed model-request attempt before the loop retries or closes
      * its step. A listener returns `{ kind: 'retry' }` without calling `next()`
      * when it owns recovery, or calls `next()` to delegate. The default

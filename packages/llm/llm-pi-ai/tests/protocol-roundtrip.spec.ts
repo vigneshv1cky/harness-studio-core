@@ -1,7 +1,7 @@
 /** Cross-protocol requests must not overwrite the history needed by its original provider. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import LlmRuntime, { createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createAssistantMessage, createToolResultMessage, createUserMessage, ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { Message } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import * as DeepSeek from '@deepseek-ai/dsh-llm-deepseek-api-key'
@@ -79,6 +79,16 @@ function wireHistory(request: unknown, api: Api): unknown[] {
   const history = (request as Record<string, unknown>)[api === 'openai-responses' ? 'input' : 'messages']
   if (!Array.isArray(history)) throw new Error('Expected a wire message array')
   return history
+}
+
+function toolIds(request: unknown, api: Api): unknown[] {
+  return (wireHistory(request, api) as Record<string, unknown>[]).flatMap(message => (
+    Array.isArray(message['content'])
+      ? (message['content'] as Record<string, unknown>[]).flatMap(block => (
+        block['type'] === 'tool_use' ? [block['id']] : block['type'] === 'tool_result' ? [block['tool_use_id']] : []
+      ))
+      : []
+  ))
 }
 
 function expectToolPairs(request: unknown, api: Api): void {
@@ -175,6 +185,11 @@ describe('protocol history round trips', () => {
     expect(JSON.stringify(target.requests[0])).not.toContain('encrypted-reasoning')
     expect(JSON.stringify(target.requests[0])).not.toContain('encrypted-redacted-reasoning')
     expect(JSON.stringify(target.requests[0])).not.toContain('signed-reasoning')
+    // A redacted thinking block's placeholder text is not readable reasoning for another model.
+    expect(JSON.stringify(target.requests[0])).not.toContain('[Reasoning redacted]')
+    if (targetApi === 'anthropic-messages') {
+      for (const id of toolIds(target.requests[0], targetApi)) expect(id).toMatch(/^[a-zA-Z0-9_-]{1,64}$/)
+    }
     history.push(foreign.message, createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Continue with the original model.' }] }))
     history = JSON.parse(JSON.stringify(history)) as Message[]
     expect(history.slice(0, -2)).toEqual(JSON.parse(saved))
@@ -183,5 +198,46 @@ describe('protocol history round trips', () => {
     expect(history.slice(0, -2)).toEqual(JSON.parse(saved))
     expect(source.requests).toHaveLength(3)
     expect(target.requests).toHaveLength(1)
+  })
+})
+
+describe('history another provider produced, sent to an Anthropic-format route with thinking', () => {
+  it('sends unsigned reasoning as text, keeps no foreign signature, and rewrites tool ids in pairs', async () => {
+    vi.stubEnv('PROTOCOL_ROUNDTRIP_KEY', 'test-key')
+    const target = await mockServer([{ events: frames('anthropic-messages') }])
+    const ctx = new Context()
+    contexts.push(ctx)
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, { providers: {
+      claude: { api: 'anthropic-messages', baseURL: target.url, apiKeyEnv: 'PROTOCOL_ROUNDTRIP_KEY', cacheRetention: 'none', models: [{ id: 'model', reasoningEfforts: { high: 'high' } }] },
+    } })
+    const callId = ToolCallId('call_00_lookup|fc_item.7')
+    const history: Message[] = [
+      createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Look up the value.' }] }),
+      createAssistantMessage({
+        content: [
+          { type: 'reasoning', text: 'I should look it up.' },
+          { type: 'text', text: 'Looking it up.' },
+          { type: 'tool-call', id: callId, name: 'lookup', arguments: '{"key":1}' },
+        ],
+        source: {
+          provider: 'deepseek-official',
+          model: 'deepseek-v4-flash',
+          replayState: { response: { kind: 'deepseek-messages', version: 1, model: 'deepseek-v4-flash' }, blocks: [{ type: 'reasoning', signature: 'deepseek-signature' }, { type: 'text' }, { type: 'tool-call' }] },
+        },
+      }),
+      createToolResultMessage({ callId, content: [{ type: 'text', text: 'value' }], isError: false }),
+    ]
+
+    const result = await assemble(ctx, { provider: 'claude', model: 'model', messages: history, tools: [tool], reasoningEffort: ReasoningEffortId('high') })
+    expect(result.finish).toEqual({ kind: 'stop' })
+    const request = target.requests[0]
+    expect(request).toMatchObject({ thinking: { type: 'enabled' } })
+    expect(JSON.stringify(request)).not.toContain('deepseek-signature')
+    const [, assistant] = wireHistory(request, 'anthropic-messages') as { content: Record<string, unknown>[] }[]
+    expect(assistant?.content.map(block => block['type'])).toEqual(['text', 'text', 'tool_use'])
+    expect(assistant?.content[0]).toMatchObject({ type: 'text', text: 'I should look it up.' })
+    const ids = toolIds(request, 'anthropic-messages')
+    expect(ids).toEqual(['call_00_lookup_fc_item_7', 'call_00_lookup_fc_item_7'])
   })
 })

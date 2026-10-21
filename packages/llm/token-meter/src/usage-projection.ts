@@ -5,10 +5,11 @@
 import { z } from 'zod'
 import { lastAssistantStreamChunk, type TokenUsage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-llm-retry/types'
-import { SessionSeq } from '@deepseek-ai/dsh-session'
+import { canonicalHeader, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import type { ContextPressureProjection, TokenUsageProjection } from './projection.ts'
+import { estimateToolsTokens } from './estimate.ts'
 import { foldSurfaceProjection } from './surface-projection.ts'
 
 const zeroBuckets = (): TokenUsageProjection => ({
@@ -93,9 +94,17 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
 }
 
 /** The context-pressure state schema and source of its inferred type. */
+const routeSchema = z.object({ provider: z.string(), model: z.string() }).strict()
+
 const contextPressureStateSchema = z.object({
   contextWindow: z.number().int().positive().optional(),
+  /** Provider/model of the newest `request/context` record. */
+  route: routeSchema.optional(),
+  /** Heuristic tokens of the newest request envelope's tool schemas. */
+  toolsTokens: z.number().int().nonnegative().optional(),
   pressureTokens: z.number().int().nonnegative().optional(),
+  /** Route current when {@link pressureTokens} was reported. */
+  sampleRoute: routeSchema.optional(),
   surfaceTokens: z.number().int().nonnegative(),
   sampledSurfaceTokens: z.number().int().nonnegative().optional(),
   claim: z.object({
@@ -106,6 +115,11 @@ const contextPressureStateSchema = z.object({
 }).strict()
 
 type ContextPressureState = z.infer<typeof contextPressureStateSchema>
+
+type Route = z.infer<typeof routeSchema>
+
+const sameRoute = (left: Route | undefined, right: Route | undefined): boolean =>
+  left?.provider === right?.provider && left?.model === right?.model
 
 /**
  * Token-meter's session projection unit.
@@ -172,13 +186,19 @@ export const tokenUsageProjectionDefinition = {
  */
 export const contextPressureProjectionDefinition = {
   key: 'contextPressure',
-  stateVersion: 5,
+  stateVersion: 6,
   stateSchema: contextPressureStateSchema,
   init: () => ({ surfaceTokens: 0 }),
   apply: (state, event) => {
     const fold = foldSurfaceProjection(state.claim, event)
     let next = state
+    if (event.type === 'request/header') {
+      const toolsTokens = estimateToolsTokens(canonicalHeader(event.data.header))
+      if (toolsTokens !== next.toolsTokens) next = { ...next, toolsTokens }
+    }
     if (event.type === 'request/context') {
+      const route = { provider: event.data.provider, model: event.data.model }
+      if (!sameRoute(route, next.route)) next = { ...next, route }
       const contextWindow = event.data.contextWindow
       if (contextWindow !== state.contextWindow) {
         if (contextWindow !== undefined) {
@@ -192,8 +212,15 @@ export const contextPressureProjectionDefinition = {
     const usage = usageOf(event)
     if (usage !== undefined) {
       const pressureTokens = pressureFrom(usage)
-      if (pressureTokens !== next.pressureTokens || next.sampledSurfaceTokens !== next.surfaceTokens) {
-        next = { ...next, pressureTokens, sampledSurfaceTokens: next.surfaceTokens }
+      if (pressureTokens !== next.pressureTokens || next.sampledSurfaceTokens !== next.surfaceTokens
+        || !sameRoute(next.sampleRoute, next.route)) {
+        const { sampleRoute: _previous, ...withoutSampleRoute } = next
+        next = {
+          ...withoutSampleRoute,
+          pressureTokens,
+          sampledSurfaceTokens: next.surfaceTokens,
+          ...next.route === undefined ? {} : { sampleRoute: next.route },
+        }
       }
     }
     if (fold.deltaTokens !== 0) {
@@ -207,12 +234,18 @@ export const contextPressureProjectionDefinition = {
   },
   wire: {
     viewSchema: pressureSchema,
-    view: ({ contextWindow, pressureTokens, surfaceTokens, sampledSurfaceTokens }) => ({
-      ...contextWindow === undefined ? {} : { contextWindow },
-      ...pressureTokens === undefined ? {} : { pressureTokens },
-      ...pressureTokens === undefined || sampledSurfaceTokens === undefined
-        ? {}
-        : { projectedTokens: Math.max(0, pressureTokens + surfaceTokens - sampledSurfaceTokens) },
-    }),
+    view: ({ contextWindow, route, toolsTokens, pressureTokens, sampleRoute, surfaceTokens, sampledSurfaceTokens }) => {
+      const capacity = contextWindow === undefined ? {} : { contextWindow }
+      // A usage sample always records the surface total it was taken against.
+      if (pressureTokens === undefined || sampledSurfaceTokens === undefined) return capacity
+      // Another route's count describes a request priced by another tokenizer,
+      // so it is replaced by the heuristic estimate until this route reports.
+      if (!sameRoute(sampleRoute, route)) return { ...capacity, projectedTokens: surfaceTokens + (toolsTokens ?? 0) }
+      return {
+        ...capacity,
+        pressureTokens,
+        projectedTokens: Math.max(0, pressureTokens + surfaceTokens - sampledSurfaceTokens),
+      }
+    },
   },
 } satisfies ProjectionDefinition<'contextPressure', ContextPressureState>

@@ -72,7 +72,9 @@ function modelSwitchNotice(previous: ModelSelection, selected: ModelSelection) {
  * admitted request. It compares the assembled selection with the latest
  * request header; effort-only changes and empty no-request decisions add no
  * notice. Failure before header persistence repeats the notice on the next
- * request.
+ * request. `agent/model-selection` reports the selected provider/model pair:
+ * the pending selection when asked for it, otherwise the one the current step
+ * assembled (the pending one before any assembly).
  *
  * @param agentCtx - The selected Agent's scoped context.
  * @param selection - Mutable selection owned by the calling entry point.
@@ -110,6 +112,14 @@ export function installModelSelection(agentCtx: Context, selection: ModelSelecti
       }
     },
   )
+  const disposeRoute = agentCtx.on(
+    'agent/model-selection',
+    async ({ pending }, next) => {
+      const resolved = await next()
+      const selected = pending ? selection.current : selection.assembled ?? selection.current
+      return selected === undefined ? resolved : { provider: selected.provider, model: selected.model }
+    },
+  )
   const disposeNotice = agentCtx.on(
     'agent/pre-step',
     async ({ agent, messages, signal, step }, next): Promise<PreStepDecision> => {
@@ -127,6 +137,7 @@ export function installModelSelection(agentCtx: Context, selection: ModelSelecti
   return () => {
     disposeAssembly()
     disposeRequest()
+    disposeRoute()
     disposeNotice()
   }
 }

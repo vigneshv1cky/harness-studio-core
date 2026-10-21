@@ -12,7 +12,9 @@ import type { Session, SessionSeq } from '@deepseek-ai/dsh-session'
 import { CONTEXT_WINDOW_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
-import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+import { agentEvents } from '@deepseek-ai/dsh-agent'
+import type { Agent, PreStepDecision, RequestErrorAction } from '@deepseek-ai/dsh-agent'
+import type { EpochHeader } from '@deepseek-ai/dsh-session'
 import type { CommandId } from '@deepseek-ai/dsh-commands/brand'
 // Type-only: makes the optional sibling service available to `ctx.get()`.
 import type {} from '@deepseek-ai/dsh-compaction-tool-result-pruner'
@@ -45,10 +47,10 @@ export type {
   ResolvedTargetPolicy,
 } from './types.ts'
 
+type Target = Pick<LlmCallConfig, 'provider' | 'model'>
+
 /** Resolve the exact provider/model durably routed for the latest request. */
-function routedTarget(
-  session: Session,
-): Pick<LlmCallConfig, 'provider' | 'model'> | undefined {
+function routedTarget(session: Session): Target | undefined {
   const config = session.requestHeader()?.config
   if (config === undefined || config.provider.length === 0 || config.model.length === 0) {
     return undefined
@@ -56,26 +58,49 @@ function routedTarget(
   return { provider: config.provider, model: config.model }
 }
 
+function sameTarget(left: Target, right: Target | undefined): boolean {
+  return left.provider === right?.provider && left.model === right.model
+}
+
 /**
  * Output tokens the routed request reserves, which the provider charges to the
- * same window as the prompt. The effective envelope's own cap wins; otherwise
- * the adapter's per-request default, which the adapter materializes when that
- * envelope omits one. No declared cap means no reservation.
+ * same window as the prompt. The effective envelope's own cap wins while it
+ * routes `target`; after a switch, the agent's configured cap or the adapter's
+ * per-request default for the new model. No declared cap means no reservation.
  */
-function reservedCompletionTokens(agent: Agent, defaultMaxTokens: number | undefined): number {
-  const configured = agent.session.requestHeader()?.config.maxTokens
+function reservedCompletionTokens(agent: Agent, target: Target, defaultMaxTokens: number | undefined): number {
+  const config = agent.session.requestHeader()?.config
+  const configured = config !== undefined && sameTarget(target, config) ? config.maxTokens : agent.options.maxTokens
   return configured ?? defaultMaxTokens ?? 0
 }
 
-/** Resolve the conversation target used to select an optional policy override. */
-function conversationTarget(
-  agent: Agent,
-): Pick<LlmCallConfig, 'provider' | 'model'> | undefined {
-  const routed = routedTarget(agent.session)
-  if (routed !== undefined) return routed
-  if (agent.options.provider === undefined || agent.options.provider.length === 0
-    || agent.options.model === undefined || agent.options.model.length === 0) return undefined
-  return { provider: agent.options.provider, model: agent.options.model }
+/**
+ * The latest request envelope re-addressed to `target`, so the token meter
+ * prices the surface for the model that sends next and does not reuse the
+ * usage another model reported for that envelope.
+ */
+function headerFor(session: Session, target: Target): EpochHeader | undefined {
+  const header = session.requestHeader()
+  if (header === undefined || sameTarget(target, header.config)) return undefined
+  return { ...header, config: { provider: target.provider, model: target.model } }
+}
+
+/** Overflow recovery progress for one agent's current request sequence. */
+interface OverflowState {
+  /** Overflow retries already authorized. */
+  readonly retries: number
+  /** Estimated size of the first request the provider refused. */
+  readonly refusedTokens: number
+}
+
+/** What one running compaction measures against, read by {@link BasicCompactionEngine.summarize}. */
+interface CompactionPlan {
+  /** Conversation route the compaction measures; resolved when the summary starts when absent. */
+  readonly target?: Target
+  /** Resolve an absent target from the pending selection of an idle agent. */
+  readonly pending?: boolean
+  /** Largest summary request size an overflow retry allows. */
+  readonly overflowBudget?: number
 }
 
 const thresholdRatioSchema = z.number()
@@ -87,6 +112,7 @@ const summarizationModelSchema = z.string()
 const maxTokensSchema = z.number().step(1).min(1)
 const compactionRetriesSchema = z.number().step(1).min(0)
 const maxOverflowRetriesSchema = z.number().step(1).min(0)
+const overflowShrinkRatiosSchema = z.array(z.number())
 
 const modelPolicy: z<ModelCompactPolicyConfig> = z.object({
   provider: z.string().required(),
@@ -100,6 +126,7 @@ const modelPolicy: z<ModelCompactPolicyConfig> = z.object({
   maxTokens: maxTokensSchema,
   compactionRetries: compactionRetriesSchema,
   maxOverflowRetries: maxOverflowRetriesSchema,
+  overflowShrinkRatios: overflowShrinkRatiosSchema,
 })
 
 /**
@@ -123,6 +150,7 @@ export class BasicCompactionEngine extends CompactionEngine {
     maxTokens: maxTokensSchema,
     compactionRetries: compactionRetriesSchema,
     maxOverflowRetries: maxOverflowRetriesSchema,
+    overflowShrinkRatios: overflowShrinkRatiosSchema,
     modelPolicies: z.array(modelPolicy),
     auto: z.boolean(),
   })
@@ -131,8 +159,9 @@ export class BasicCompactionEngine extends CompactionEngine {
   readonly config: ResolvedConfig
 
   private readonly warnedPressureConfigTargets = new Set<string>()
-  private readonly overflowRetries = new WeakMap<Agent, number>()
+  private readonly overflowStates = new WeakMap<Agent, OverflowState>()
   private readonly overflowAgents = new WeakMap<Session, Agent>()
+  private readonly plans = new WeakMap<Agent, CompactionPlan>()
 
   constructor(ctx: Context, config: BasicCompactionConfig = {}) {
     super(ctx)
@@ -176,7 +205,7 @@ export class BasicCompactionEngine extends CompactionEngine {
     })
 
     ctx.on('agent/status', ({ agent, status }) => {
-      if (status === 'idle') this.overflowRetries.delete(agent)
+      if (status === 'idle') this.overflowStates.delete(agent)
     })
 
     // A successful response starts a fresh overflow-recovery sequence even
@@ -184,7 +213,7 @@ export class BasicCompactionEngine extends CompactionEngine {
     ctx.on('session/event', (session, event) => {
       if (event.type !== 'assistant/message') return
       const agent = this.overflowAgents.get(session)
-      if (agent !== undefined) this.overflowRetries.delete(agent)
+      if (agent !== undefined) this.overflowStates.delete(agent)
     })
 
     ctx.on('agent/request-error', async (
@@ -196,13 +225,25 @@ export class BasicCompactionEngine extends CompactionEngine {
       const target = routedTarget(agent.session)
       if (target === undefined) return next()
       const policy = resolveTargetPolicy(this.config, target)
-      const retries = this.overflowRetries.get(agent) ?? 0
+      const state = this.overflowStates.get(agent)
+      const retries = state?.retries ?? 0
       if (retries >= policy.maxOverflowRetries) return next()
+      // The provider refused a request the estimate let through, so each retry
+      // aims below the first refused size by the next shrink ratio.
+      const refusedTokens = state?.refusedTokens ?? this.ctx.tokenMeter.measure(agent.session).totalTokens
+      // oxlint-disable-next-line typescript/no-non-null-assertion -- config validation keeps maxOverflowRetries <= the ratio count
+      const overflowBudget = Math.floor(refusedTokens * policy.overflowShrinkRatios[retries]!)
+      const authorize = (): RequestErrorAction => {
+        this.overflowStates.set(agent, { retries: retries + 1, refusedTokens })
+        return { kind: 'retry' }
+      }
 
       const generation = agent.session.surface.replaceGeneration
       let result: CompactionResult | null
       try {
-        result = await this.compactIfNeeded(agent, 'context-overflow', signal)
+        result = await this.runPlanned(agent, { target, overflowBudget }, () => (
+          this.compactIfNeeded(agent, 'context-overflow', signal)
+        ))
       } catch (recoveryError: unknown) {
         const message = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
         // A model-free prune can land before later summary work fails. That
@@ -214,8 +255,7 @@ export class BasicCompactionEngine extends CompactionEngine {
             `context-overflow compaction failed after durable surface progress: ${message}; `
             + 'retrying from the replacement surface',
           )
-          this.overflowRetries.set(agent, retries + 1)
-          return { kind: 'retry' }
+          return authorize()
         }
         ctx.logger.warn(
           // oxlint-disable-next-line typescript/no-unnecessary-condition -- the signal can abort while recovery is awaited.
@@ -229,9 +269,67 @@ export class BasicCompactionEngine extends CompactionEngine {
       if (signal.aborted
         || agent.session.surface.replaceGeneration <= generation) return next()
       if (result !== null) logResult(result, 'context overflow recovery')
-      this.overflowRetries.set(agent, retries + 1)
-      return { kind: 'retry' }
+      return authorize()
     })
+  }
+
+  /**
+   * Resolve the provider/model the agent's next request uses: a model
+   * selection's route when one is installed, otherwise the latest routed
+   * request, otherwise the `AgentOptions` pair.
+   * @param agent - agent whose route is resolved.
+   * @param pending - true for an idle agent, whose next prompt assembly takes the pending selection.
+   * @returns the route, or `undefined` when none is known.
+   */
+  private async nextTarget(agent: Agent, pending: boolean): Promise<Target | undefined> {
+    const selected = await agentEvents(this.ctx, agent).waterfall(
+      'agent/model-selection', { pending },
+      () => Promise.resolve<Target | undefined>(undefined),
+    )
+    if (selected !== undefined) return selected
+    const routed = routedTarget(agent.session)
+    if (routed !== undefined) return routed
+    if (agent.options.provider === undefined || agent.options.provider.length === 0
+      || agent.options.model === undefined || agent.options.model.length === 0) return undefined
+    return { provider: agent.options.provider, model: agent.options.model }
+  }
+
+  /** Run one compaction with its plan visible to {@link summarize}. */
+  private async runPlanned<T>(agent: Agent, plan: CompactionPlan, run: () => Promise<T>): Promise<T> {
+    const previous = this.plans.get(agent)
+    this.plans.set(agent, plan)
+    try {
+      return await run()
+    } finally {
+      if (previous === undefined) this.plans.delete(agent)
+      else this.plans.set(agent, previous)
+    }
+  }
+
+  /**
+   * Largest summary request the summarizing model takes while leaving room for
+   * the summary itself: its window minus the summary cap, lowered to an
+   * overflow retry's budget. `undefined` when neither is known.
+   */
+  private async summaryBudget(
+    target: Target | undefined,
+    maxTokens: number,
+    overflowBudget: number | undefined,
+    signal?: AbortSignal,
+  ): Promise<number | undefined> {
+    let ceiling: number | undefined
+    if (target !== undefined) {
+      try {
+        const window = (await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal)).context?.contextWindow
+        if (window !== undefined && window > maxTokens) ceiling = window - maxTokens
+      } catch (error: unknown) {
+        // A route without model metadata limits the summary request only by an overflow budget.
+        signal?.throwIfAborted()
+        this.ctx.logger.debug(`compaction: no model metadata for ${target.provider}/${target.model}: ${String(error)}`)
+      }
+    }
+    if (ceiling === undefined) return overflowBudget
+    return overflowBudget === undefined ? ceiling : Math.min(ceiling, overflowBudget)
   }
 
   /**
@@ -249,11 +347,20 @@ export class BasicCompactionEngine extends CompactionEngine {
     agent: Agent,
     signal?: AbortSignal,
   ): Promise<SummaryResult> {
-    const target = conversationTarget(agent)
+    const plan = this.plans.get(agent)
+    const target = plan?.target ?? await this.nextTarget(agent, plan?.pending ?? false)
     const config = target === undefined
       ? this.config
       : resolveTargetPolicy(this.config, target)
-    return summarizeWithLlm(this.ctx, config, input, agent, signal)
+    const summaryTarget = config.summarizationProvider.length === 0
+      ? target
+      : { provider: config.summarizationProvider, model: config.summarizationModel }
+    const budget = await this.summaryBudget(summaryTarget, config.maxTokens, plan?.overflowBudget, signal)
+    return summarizeWithLlm(this.ctx, {
+      ...config,
+      ...summaryTarget === undefined ? {} : { target: summaryTarget },
+      ...budget === undefined ? {} : { budget },
+    }, input, agent, signal)
   }
 
   /**
@@ -271,20 +378,30 @@ export class BasicCompactionEngine extends CompactionEngine {
     trigger: CompactionTrigger,
     signal: AbortSignal,
   ): Promise<CompactionResult | null> {
-    const target = routedTarget(agent.session)
-    if (target === undefined) return null
-    const policy = resolveTargetPolicy(this.config, target)
-    const meter = this.ctx.tokenMeter
-    let measurement = meter.measure(agent.session)
+    if (routedTarget(agent.session) === undefined) return null
+    let target: Target
     switch (trigger) {
       case 'context-overflow':
+        // The refused request's own route, durably logged before it was sent.
+        // oxlint-disable-next-line typescript/no-non-null-assertion -- checked above
+        target = routedTarget(agent.session)!
         break
       case 'pressure':
+        // oxlint-disable-next-line typescript/no-non-null-assertion -- a routed session always resolves a target
+        target = (await this.nextTarget(agent, false))!
+        signal.throwIfAborted()
         break
       /* v8 ignore next -- closed-union exhaustiveness guard */
       default:
         assertNever(trigger, 'compaction trigger')
     }
+    const policy = resolveTargetPolicy(this.config, target)
+    const meter = this.ctx.tokenMeter
+    // After a switch, price the surface for the next model and ignore the usage the previous one reported.
+    const header = headerFor(agent.session, target)
+    const measure = () => meter.measure(agent.session, header)
+    let measurement = measure()
+    const plan: CompactionPlan = { target, ...this.plans.get(agent) }
 
     // Pruning is optional so compaction-basic remains independently composable.
     // Overflow always qualifies; pressure first resolves the routed model's
@@ -294,11 +411,11 @@ export class BasicCompactionEngine extends CompactionEngine {
     if (trigger === 'context-overflow') {
       if (prune !== undefined) {
         prune.pruneSession(agent.session)
-        measurement = meter.measure(agent.session)
+        measurement = measure()
       }
       const range = selectCompactableRange(agent.session, measurement, 0)
       if (range === null) return null
-      return this.compactRegion(range.start, range.end, agent, signal)
+      return this.runPlanned(agent, plan, () => this.compactRegion(range.start, range.end, agent, signal))
     }
 
     const info = await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal)
@@ -314,7 +431,7 @@ export class BasicCompactionEngine extends CompactionEngine {
     const spec = resolveCompactSpec(
       policy,
       info.context.contextWindow,
-      reservedCompletionTokens(agent, info.defaultMaxTokens),
+      reservedCompletionTokens(agent, target, info.defaultMaxTokens),
     )
     if (measurement.totalTokens < spec.thresholdTokens) return null
 
@@ -322,7 +439,7 @@ export class BasicCompactionEngine extends CompactionEngine {
     // summary range, then remeasure through the singleton replay fold.
     if (prune !== undefined) {
       prune.pruneSession(agent.session)
-      measurement = meter.measure(agent.session)
+      measurement = measure()
     }
     if (measurement.totalTokens < spec.thresholdTokens) return null
 
@@ -335,8 +452,8 @@ export class BasicCompactionEngine extends CompactionEngine {
         /* v8 ignore next -- paired with the defensive post-success branch above. */
         break
       }
-      result = await this.compactRegion(range.start, range.end, agent, signal)
-      measurement = meter.measure(agent.session)
+      result = await this.runPlanned(agent, plan, () => this.compactRegion(range.start, range.end, agent, signal))
+      measurement = measure()
       if (measurement.totalTokens < spec.thresholdTokens) return result
     }
 
@@ -397,7 +514,11 @@ export class BasicCompactionEngine extends CompactionEngine {
             0,
           )
           if (range === null) return null
-          return await compactSurfaceRegion(
+          // An idle agent's next request takes the pending selection, so a
+          // compaction right after a switch is written by the new model. The
+          // route resolves inside the summary step: the opening marker is the
+          // compaction lock and must be appended before anything is awaited.
+          return await this.runPlanned(agent, { pending: true }, () => compactSurfaceRegion(
             this.regionDependencies(),
             agent.session,
             range.start,
@@ -412,7 +533,7 @@ export class BasicCompactionEngine extends CompactionEngine {
               },
             },
             operationSignal,
-          )
+          ))
         } catch (error: unknown) {
           if (agentSignal.aborted && operationSignal.reason === agentSignal.reason) {
             throw new ManualCompactionError(

@@ -21,7 +21,12 @@ export class HarnessError extends Error {
   }
 }
 
-/** Canonical provider-neutral code for a model request rejected because its context window was exceeded. */
+/**
+ * Canonical provider-neutral code for a model request the provider refused as
+ * too long for the model's context window, or as a request body too large to
+ * accept. Both refusals are answered by sending a smaller conversation, so
+ * adapters report both under this one code.
+ */
 export const CONTEXT_WINDOW_EXCEEDED_CODE = 'CONTEXT_WINDOW_EXCEEDED'
 
 /** Canonical provider-neutral code for an exhausted account quota or balance. */
@@ -81,12 +86,53 @@ const EXCEEDS_MODEL_CONTEXT = new RegExp(
  * @returns true when the detail identifies a request exceeding the model context window.
  */
 export function isContextWindowExceededError(detail: string): boolean {
+  if (RATE_LIMIT_WORDING.test(detail)) return false
   return STRUCTURED_CONTEXT_OVERFLOW.test(detail)
     || /\b(?:maximum|max)(?:\s+(?:allowed|supported))?\s+context\s+(?:length|window)\b/i.test(detail)
     || TOO_LARGE_FOR_CONTEXT.test(detail)
     || /\b(?:input|prompt|request)\s+(?:is\s+)?too\s+(?:long|large)\s+for\s+(?:this|the)\s+model\b/i.test(detail)
     || EXCEEDS_MODEL_CONTEXT.test(detail)
+    || PROVIDER_PROMPT_LENGTH.some(pattern => pattern.test(detail))
 }
+
+/** Rate-limit wording that also mentions tokens; a per-minute token budget is not a context bound. */
+const RATE_LIMIT_WORDING = /\brate[\s_-]?limit|\btoo many requests\b|\bper (?:minute|hour|day)\b|\b[tr]pm\b/i
+
+/** Provider phrasings that name the prompt length without the words "context window". */
+const PROVIDER_PROMPT_LENGTH: readonly RegExp[] = [
+  // Anthropic Messages, also served by DeepSeek's Anthropic endpoint.
+  /\bprompt is too long\b/i,
+  /\binput is too long for requested model\b/i,
+  /\bmodel_context_window_exceeded\b/i,
+  /\bmaximum prompt length is \d+/i,
+  /\breduce the length of the messages\b/i,
+  /\bcontext length is only \d+ tokens\b/i,
+  /\bgreater than the context length\b/i,
+  /\binput token count\b.{0,40}\bexceeds the maximum\b/i,
+  /\bnumber of input tokens exceeds maximum length\b/i,
+  /\bprompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?/i,
+]
+
+/**
+ * Recognize a provider or gateway refusing a request body as too large to
+ * accept, independent of any token count. Callers also treat HTTP status 413
+ * as this refusal.
+ * @param detail - provider error code/type/message text joined into one string.
+ * @returns true for "request entity too large", "payload too large", a gateway's
+ *   "failed to buffer the request body", and Anthropic's `request_too_large`.
+ */
+export function isPayloadTooLargeError(detail: string): boolean {
+  return PAYLOAD_TOO_LARGE.some(pattern => pattern.test(detail))
+}
+
+/** Phrasings of a request body refused for its size. */
+const PAYLOAD_TOO_LARGE: readonly RegExp[] = [
+  /\brequest entity too large\b/i,
+  /\bpayload too large\b/i,
+  /\brequest[\s_]too[\s_]large\b/i,
+  /\brequest body too large\b/i,
+  /\bfailed to buffer the request body\b/i,
+]
 
 /**
  * Recognize provider wording that identifies an exhausted account quota rather

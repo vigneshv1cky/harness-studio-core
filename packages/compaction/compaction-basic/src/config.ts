@@ -22,6 +22,9 @@ const DEFAULT_THRESHOLD_RATIO = 0.8
 /** Default verbatim-tail fraction for every routed model. */
 const DEFAULT_RETAIN_RATIO = 0.16
 
+/** Default shares of the first refused request's size that successive overflow retries aim at. */
+const DEFAULT_OVERFLOW_SHRINK_RATIOS: readonly number[] = [0.7, 0.5, 0.35]
+
 /** Fields shared by top-level defaults and exact-target overrides. */
 const POLICY_CONFIG_KEYS = [
   'thresholdRatio',
@@ -33,6 +36,7 @@ const POLICY_CONFIG_KEYS = [
   'maxTokens',
   'compactionRetries',
   'maxOverflowRetries',
+  'overflowShrinkRatios',
 ] as const
 
 /** Complete public top-level configuration key set. */
@@ -78,8 +82,16 @@ export function resolveConfig(config: BasicCompactionConfig = {}): ResolvedConfi
   const thresholdRatio = config.thresholdRatio ?? DEFAULT_THRESHOLD_RATIO
   const retention = resolveRetention(config, { retainRatio: DEFAULT_RETAIN_RATIO })
   validateRatioRetention(thresholdRatio, retention, 'BasicCompactionConfig')
+  const maxOverflowRetries = config.maxOverflowRetries ?? 3
+  const overflowShrinkRatios = shrinkRatios(config) ?? DEFAULT_OVERFLOW_SHRINK_RATIOS
+  validateOverflowRetries(maxOverflowRetries, overflowShrinkRatios, 'BasicCompactionConfig')
   const modelPolicies = resolveModelPolicies(config.modelPolicies)
   for (const [index, policy] of modelPolicies.entries()) {
+    validateOverflowRetries(
+      policy.maxOverflowRetries ?? maxOverflowRetries,
+      shrinkRatios(policy) ?? overflowShrinkRatios,
+      `BasicCompactionConfig: modelPolicies[${index}]`,
+    )
     if (policy.maxTokens === undefined && config.maxTokens === undefined
       && policy.headroomTokens !== undefined) {
       policy.maxTokens = policy.headroomTokens
@@ -103,7 +115,8 @@ export function resolveConfig(config: BasicCompactionConfig = {}): ResolvedConfi
     summarizationModel: config.summarizationModel ?? '',
     maxTokens,
     compactionRetries: config.compactionRetries ?? 1,
-    maxOverflowRetries: config.maxOverflowRetries ?? 1,
+    maxOverflowRetries,
+    overflowShrinkRatios: [...overflowShrinkRatios],
     modelPolicies,
     auto: config.auto ?? true,
   })
@@ -135,6 +148,7 @@ export function resolveTargetPolicy(
     maxTokens: override?.maxTokens ?? config.maxTokens,
     compactionRetries: override?.compactionRetries ?? config.compactionRetries,
     maxOverflowRetries: override?.maxOverflowRetries ?? config.maxOverflowRetries,
+    overflowShrinkRatios: [...(override === undefined ? undefined : shrinkRatios(override)) ?? config.overflowShrinkRatios],
   })
 }
 
@@ -213,6 +227,7 @@ export function resolveCompactSpec(
     maxTokens: policy.maxTokens,
     compactionRetries: policy.compactionRetries,
     maxOverflowRetries: policy.maxOverflowRetries,
+    overflowShrinkRatios: [...policy.overflowShrinkRatios],
   })
 }
 
@@ -299,8 +314,40 @@ function validatePolicy(
   if (maxOverflowRetries !== undefined) {
     assertNonNegativeInteger(`${name}.maxOverflowRetries`, maxOverflowRetries)
   }
+  if (config.overflowShrinkRatios !== undefined) {
+    assertShrinkRatios(`${name}.overflowShrinkRatios`, config.overflowShrinkRatios)
+  }
 
   validateSummarizationPair(config, name)
+}
+
+/**
+ * The scope's own shrink ratios. Schemastery materializes an omitted list as
+ * `[]`, so an empty list inherits like an omitted one; `maxOverflowRetries: 0`
+ * is how a scope disables overflow retries.
+ */
+function shrinkRatios(config: CompactionPolicyConfig): readonly number[] | undefined {
+  return config.overflowShrinkRatios === undefined || config.overflowShrinkRatios.length === 0
+    ? undefined
+    : config.overflowShrinkRatios
+}
+
+/** Require one shrink ratio for every overflow retry a scope allows. */
+function validateOverflowRetries(retries: number, ratios: readonly number[], name: string): void {
+  if (retries > ratios.length) {
+    throw new Error(
+      `${name}: maxOverflowRetries (${retries}) exceeds the ${ratios.length} overflowShrinkRatios entries`,
+    )
+  }
+}
+
+function assertShrinkRatios(name: string, value: unknown): asserts value is number[] {
+  if (!Array.isArray(value) || value.some((ratio: unknown, index) => (
+    typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0 || ratio >= 1
+    || (index > 0 && ratio >= (value[index - 1] as number))
+  ))) {
+    throw new Error(`${name} must be strictly decreasing numbers in (0, 1)`)
+  }
 }
 
 /** Require one scope to omit, clear, or replace the summarization target as a pair. */

@@ -121,10 +121,12 @@ describe('SSE framing and provider failures', () => {
   })
   it.each([
     [401, {}, 'AUTH'], [403, {}, 'AUTH'], [402, {}, 'QUOTA'], [429, {}, 'RATE_LIMIT'],
-    [400, {}, 'INVALID_REQUEST'], [413, {}, 'INVALID_REQUEST'], [503, {}, 'SERVER'], [404, {}, 'HTTP_404'],
+    [400, {}, 'INVALID_REQUEST'], [413, {}, 'CONTEXT_WINDOW_EXCEEDED'], [503, {}, 'SERVER'], [404, {}, 'HTTP_404'],
     [undefined, { type: 'authentication_error' }, 'AUTH'], [undefined, { type: 'rate_limit_error' }, 'RATE_LIMIT'],
     [undefined, { type: 'invalid_request_error' }, 'INVALID_REQUEST'], [undefined, {}, 'SERVER'],
     [400, { message: 'maximum context length exceeded' }, 'CONTEXT_WINDOW_EXCEEDED'],
+    [400, { type: 'invalid_request_error', message: 'prompt is too long: 1048577 tokens > 1048576 maximum' }, 'CONTEXT_WINDOW_EXCEEDED'],
+    [undefined, { type: 'request_too_large', message: 'Request exceeds the maximum allowed number of bytes.' }, 'CONTEXT_WINDOW_EXCEEDED'],
     [400, { message: 'insufficient balance' }, 'QUOTA'],
   ])('classifies status %s and error %j', (status, error, code) => {
     expect(providerError({ error }, status)).toMatchObject({ code })

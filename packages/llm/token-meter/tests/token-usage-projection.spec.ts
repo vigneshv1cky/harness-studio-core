@@ -395,18 +395,32 @@ describe('contextPressure session projection', () => {
     expect(pressure(ctx, session).pressureTokens).toBe(250)
   })
 
-  it('carries the newest recorded capacity and replaces it on a model switch', async () => {
+  it('replaces capacity on a model switch and estimates until the new route reports usage', async () => {
     const { ctx, session } = await harness()
-    startStep(session, 1, 1)
     recordContext(session, 'small', 64_000)
+    appendUser(session, 'a question that occupies some of the window')
+    startStep(session, 1, 1)
     usageChunk(session, { inputTokens: 100, outputTokens: 10 }, 1, 1)
     expect(pressure(ctx, session)).toEqual({
       pressureTokens: 100, projectedTokens: 100, contextWindow: 64_000,
     })
-    recordContext(session, 'large', 256_000)
-    expect(pressure(ctx, session)).toEqual({
-      pressureTokens: 100, projectedTokens: 100, contextWindow: 256_000,
+    session.append('request/header', {
+      header: { config: { provider: 'mock', model: 'large' }, tools: [{ name: 'read', description: 'Read a file', parameters: {} }] },
+      reason: 'change',
     })
+    recordContext(session, 'large', 256_000)
+    const estimated = pressure(ctx, session)
+    expect(estimated).not.toHaveProperty('pressureTokens')
+    expect(estimated.contextWindow).toBe(256_000)
+    expect(estimated.projectedTokens).toBeGreaterThan(0)
+    expect(estimated.projectedTokens).toBeLessThan(100)
+
+    // Switching back trusts the earlier sample again; the new route's own report replaces it.
+    recordContext(session, 'small', 64_000)
+    expect(pressure(ctx, session)).toEqual({ pressureTokens: 100, projectedTokens: 100, contextWindow: 64_000 })
+    recordContext(session, 'large', 256_000)
+    finalUsage(session, { inputTokens: 300, outputTokens: 10 }, 1, 1)
+    expect(pressure(ctx, session)).toMatchObject({ pressureTokens: 300, contextWindow: 256_000 })
   })
 
   it('removes an older capacity when the newest route advertises none', async () => {
@@ -414,8 +428,10 @@ describe('contextPressure session projection', () => {
     startStep(session, 1, 1)
     recordContext(session, 'small', 64_000)
     usageChunk(session, { inputTokens: 100, outputTokens: 10 }, 1, 1)
-    recordContext(session, 'unknown')
+    recordContext(session, 'small')
     expect(pressure(ctx, session)).toEqual({ pressureTokens: 100, projectedTokens: 100 })
+    recordContext(session, 'unknown')
+    expect(pressure(ctx, session)).toEqual({ projectedTokens: 0 })
   })
 
   it('pushes no change for unrelated events or a restated capacity', async () => {
@@ -446,7 +462,7 @@ describe('contextPressure session projection', () => {
     const checkpoint = JSON.parse(JSON.stringify(
       ctx.sessionProjections.checkpoint(session),
     )) as ReturnType<typeof ctx.sessionProjections.checkpoint>
-    expect(checkpoint.contextPressure?.ver).toBe(5)
+    expect(checkpoint.contextPressure?.ver).toBe(6)
 
     await meterFiber.dispose()
     expect(ctx.sessionProjections.snapshot(session).values).not.toHaveProperty('contextPressure')

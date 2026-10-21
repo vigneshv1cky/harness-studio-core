@@ -6,6 +6,7 @@ import LlmRuntime, {
   GenerateOptions,
   HarnessError,
   isContextWindowExceededError,
+  isPayloadTooLargeError,
   isQuotaExceededError,
   LlmAdapter,
   LlmError,
@@ -123,6 +124,24 @@ describe('LlmRuntime', () => {
     expect(isContextWindowExceededError('input is too long for this model')).toBe(true)
     expect(isContextWindowExceededError('request too large for model context')).toBe(true)
     expect(isContextWindowExceededError('input exceeds the model context window limit')).toBe(true)
+    expect(isContextWindowExceededError('invalid_request_error prompt is too long: 213462 tokens > 200000 maximum')).toBe(true)
+    expect(isContextWindowExceededError('Input is too long for requested model.')).toBe(true)
+    expect(isContextWindowExceededError('Please reduce the length of the messages or completion.')).toBe(true)
+    expect(isContextWindowExceededError('model_context_window_exceeded')).toBe(true)
+    expect(isContextWindowExceededError('This endpoint\'s maximum prompt length is 32768 tokens')).toBe(true)
+    expect(isContextWindowExceededError('the prompt has 40,000 tokens, but the configured context size is 32,768 tokens')).toBe(true)
+  })
+
+  it('keeps rate limits that mention tokens out of context-window overflow', () => {
+    expect(isContextWindowExceededError('rate_limit_error: prompt is too long for your per-minute token budget')).toBe(false)
+    expect(isContextWindowExceededError('Too many requests: input token count exceeds the maximum per minute')).toBe(false)
+  })
+
+  it('recognizes request bodies refused as too large', () => {
+    for (const detail of ['413 Request Entity Too Large', 'Payload Too Large', 'request_too_large', 'Failed to buffer the request body: length limit exceeded']) {
+      expect(isPayloadTooLargeError(detail)).toBe(true)
+    }
+    expect(isPayloadTooLargeError('image too large: resize to at most 8000 pixels')).toBe(false)
   })
 
   it('does not mistake unrelated input validation for context-window overflow', () => {

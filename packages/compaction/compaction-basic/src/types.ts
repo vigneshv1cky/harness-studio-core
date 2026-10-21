@@ -24,8 +24,13 @@ export interface CompactionPolicyConfig {
   maxTokens?: number
   /** Extra attempts after the first compaction when pressure remains above threshold. Defaults to `1`. */
   compactionRetries?: number
-  /** Maximum retries after canonical context overflow; `0` disables recovery. Defaults to `1`. */
+  /** Maximum retries after canonical context overflow; `0` disables recovery. At most `overflowShrinkRatios.length`; defaults to `3`. */
   maxOverflowRetries?: number
+  /**
+   * Share of the first refused request's estimated size that the summary request of each overflow retry is aimed at,
+   * in retry order; strictly decreasing, each in (0, 1). Omitted or empty inherits; defaults to `[0.7, 0.5, 0.35]`.
+   */
+  overflowShrinkRatios?: number[]
 }
 
 /** Exact provider/model override merged over the default compaction policy. */
@@ -58,6 +63,7 @@ interface ResolvedPolicyFields {
   readonly maxTokens: number
   readonly compactionRetries: number
   readonly maxOverflowRetries: number
+  readonly overflowShrinkRatios: readonly number[]
 }
 
 /** Validated immutable config whose target-specific defaults remain unresolved. */

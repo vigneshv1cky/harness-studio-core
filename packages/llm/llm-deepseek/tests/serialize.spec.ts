@@ -23,8 +23,8 @@ const capable = resolveAdapterOptions({ models: [{ id: MODEL, systemPromptUpdate
 const nativeBody = (messages: Message[]) => serialize(options({ messages }), capable, messages, new Map(), () => undefined)
 
 describe('Messages request conversion', () => {
-  it('omits saved empty assistant text without changing tool ids or thinking signatures', () => {
-    const id = 'toolu_example|toolu_example'
+  it('omits saved empty assistant text without changing valid tool ids or thinking signatures', () => {
+    const id = 'toolu_example-01'
     const content: ContentBlock[] = [
       { type: 'text', text: '' }, { type: 'reasoning', text: 'reason' }, call(id), { type: 'text', text: '' },
     ]
@@ -171,7 +171,13 @@ describe('Messages request conversion', () => {
     expect(nativeBody([user(), update]).system).toBeUndefined()
     expect(() => nativeBody([user(), assistant([{ type: 'text', text: 'done' }]), update])).toThrow(/preceding user/)
     expect(() => nativeBody([user(), createSystemMessage('')])).toThrow(/empty in-history/)
-    expect(() => nativeBody([user(), assistant([call(), call('b')]), update, result()])).toThrow(/immediate results/)
+    expect(nativeBody([user(), assistant([call(), call('b')]), update, result()]).messages.slice(2)).toEqual([
+      { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'a', content: [{ type: 'text', text: 'result' }], is_error: false },
+        { type: 'tool_result', tool_use_id: 'b', content: [{ type: 'text', text: 'No result was recorded for this tool call.' }], is_error: true },
+      ] },
+      { role: 'system', content: [{ type: 'text', text: 'update' }] },
+    ])
   })
 
   it.each([[], [{ type: 'reasoning', text: 'child reasoning' }], [call('child-call')]] satisfies ContentBlock[][])(
@@ -331,12 +337,42 @@ describe('Messages request conversion', () => {
     expect(serialize(options(), capped, [user()], new Map(), () => undefined).max_tokens).toBe(321)
   })
 
+  const missing = (id: string) => ({ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'No result was recorded for this tool call.' }], is_error: true })
+  const orphan = [{ type: 'text', text: 'Result of an earlier tool call that is no longer in this conversation:' }, { type: 'text', text: 'result' }]
+  const paired = (id: string) => ({ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'result' }], is_error: false })
+  const toolUse = (id: string) => ({ type: 'tool_use', id, name: 'read', input: { path: 'a' } })
+
   it.each([
-    [result()], [assistant([call()])], [assistant([call()]), user()],
-    [assistant([call(), call()]), result()],
-    [assistant([call()]), result(), result()],
-  ])('rejects unmatched or duplicated tool history %#', (...messages) => {
-    expect(() => body(messages)).toThrow(/tool/)
+    [[result()], [{ role: 'user', content: orphan }]],
+    [[assistant([call()])], [{ role: 'assistant', content: [toolUse('a')] }, { role: 'user', content: [missing('a')] }]],
+    [[assistant([call()]), user()], [{ role: 'assistant', content: [toolUse('a')] }, { role: 'user', content: [missing('a'), { type: 'text', text: 'hello' }] }]],
+    [[assistant([call(), call()]), result()], [{ role: 'assistant', content: [toolUse('a'), toolUse('a_1')] }, { role: 'user', content: [paired('a'), missing('a_1')] }]],
+    [[assistant([call()]), result(), result()], [{ role: 'assistant', content: [toolUse('a')] }, { role: 'user', content: [paired('a'), ...orphan] }]],
+    [[assistant([call()]), assistant([{ type: 'text', text: 'more' }]), user()], [{ role: 'assistant', content: [toolUse('a'), { type: 'text', text: 'more' }] }, { role: 'user', content: [missing('a'), { type: 'text', text: 'hello' }] }]],
+  ])('repairs unmatched or duplicated tool history instead of refusing it %#', (messages, expected) => {
+    expect(body(messages).messages).toEqual(expected)
+  })
+
+  it('rewrites other providers\' tool ids to the accepted characters and keeps each result with its call', () => {
+    const responsesId = `call_${'x'.repeat(30)}|fc_${'y'.repeat(60)}`
+    const history = [user(), assistant([call(responsesId), call('call.1'), call('call:1')]), result(responsesId), result('call.1'), result('call:1'), user('next')]
+    const request = body(history)
+    const ids = request.messages[1]?.content.map(block => block.type === 'tool_use' ? block.id : '')
+    expect(ids).toEqual([`call_${'x'.repeat(30)}_fc_${'y'.repeat(25)}`, 'call_1', 'call_1_1'])
+    for (const id of ids ?? []) expect(id).toMatch(/^[a-zA-Z0-9_-]{1,64}$/)
+    expect(request.messages[2]?.content.map(block => block.type === 'tool_result' ? block.tool_use_id : block.type)).toEqual([...ids ?? [], 'text'])
+    expect(body(history)).toEqual(request)
+    expect(body([assistant([call('|||')]), result('|||')]).messages[0]?.content).toEqual([{ ...toolUse('___') }])
+    expect(body([assistant([call('')]), result('')]).messages[0]?.content).toEqual([{ ...toolUse('tool') }])
+  })
+
+  it('sends another model\'s reasoning only as readable text', () => {
+    const foreign = createAssistantMessage({ content: [
+      { type: 'reasoning', text: '[Reasoning redacted]' }, { type: 'reasoning', text: '  ' }, { type: 'reasoning', text: 'readable' }, { type: 'text', text: 'answer' },
+    ], source: { provider: 'anthropic', model: 'claude-sonnet' } })
+    expect(body([user(), foreign, user()]).messages[1]?.content).toEqual([
+      { type: 'thinking', thinking: 'readable' }, { type: 'text', text: 'answer' },
+    ])
   })
 
   it.each(['{', '', '[]', 'null', '42', 'true', '"text"', '{"description":"最快，但"某个说法"没有证据。"}'])('uses empty input for malformed or non-object historical tool arguments %s', (arguments_) => {

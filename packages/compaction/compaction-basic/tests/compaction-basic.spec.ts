@@ -318,7 +318,8 @@ describe('compact configuration and defaults', () => {
       summarizationModel: '',
       maxTokens: 65_536,
       compactionRetries: 1,
-      maxOverflowRetries: 1,
+      maxOverflowRetries: 3,
+      overflowShrinkRatios: [0.7, 0.5, 0.35],
       modelPolicies: [],
       auto: true,
     })
@@ -827,7 +828,7 @@ describe('pressure measurement and retention', () => {
     const result = await compactIfNeeded(compact, session, 'pressure', 'fallback')
     expect(result).not.toBeNull()
     expect(session.requestHeader()?.config.model).toBe('actual')
-    expect(measure.mock.calls[0]).toEqual([session])
+    expect(measure.mock.calls[0]).toEqual([session, undefined])
   })
 
   it('declines when envelope pressure is high but the surface has no compactable range', async () => {

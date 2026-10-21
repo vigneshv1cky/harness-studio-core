@@ -23,14 +23,23 @@ function toolInput(raw: string): Record<string, unknown> {
     : {}
 }
 
+/**
+ * Text the multi-provider adapter stores for a redacted (encrypted) Anthropic
+ * thinking block. The readable text is a placeholder and the encrypted payload
+ * is replayable only to the model that produced it, so another model is sent nothing.
+ */
+const REDACTED_REASONING_PLACEHOLDER = '[Reasoning redacted]'
+
 function assistant(message: Message, model: string, onReplayDegrade?: (reason: string) => void): WireBlock[] {
   const replay = readReplay(message, model, onReplayDegrade)
   return message.content.flatMap((block, index): WireBlock | WireBlock[] => {
     switch (block.type) {
       case 'text': return block.text.length === 0 ? [] : { type: 'text', text: block.text }
-      case 'reasoning': return {
-        type: 'thinking', thinking: block.text,
-        ...replay?.[index]?.signature === undefined ? {} : { signature: replay[index].signature },
+      case 'reasoning': {
+        const signature = replay?.[index]?.signature
+        // Unsigned reasoning from another model is sent only when it is readable text.
+        if (signature === undefined && (block.text.trim().length === 0 || block.text === REDACTED_REASONING_PLACEHOLDER)) return []
+        return { type: 'thinking', thinking: block.text, ...signature === undefined ? {} : { signature } }
       }
       case 'tool-call': return { type: 'tool_use', id: block.id, name: block.name, input: toolInput(block.arguments) }
       default: return unsupported(`assistant content ${block.type}`)
@@ -52,10 +61,89 @@ function omitEarlierThinking(messages: WireMessage[]): void {
   }
 }
 
+/** Tool-call id length the Messages protocol accepts. */
+const MAX_TOOL_ID_LENGTH = 64
+
+/** Result sent for a call whose result is not in the history, such as one interrupted before it ran. */
+const MISSING_RESULT_TEXT = 'No result was recorded for this tool call.'
+
+/** Text placed before a result whose call is not in the history, so its content stays visible. */
+const ORPHAN_RESULT_TEXT = 'Result of an earlier tool call that is no longer in this conversation:'
+
+/**
+ * Map a history tool-call id to one the Messages protocol accepts: letters,
+ * digits, underscore and hyphen, at most 64 characters, unique within the
+ * request. Other providers' ids (for example OpenAI Responses' `call|item`
+ * pairs) contain other characters. Equal input history yields equal ids, so a
+ * cached request prefix keeps matching.
+ */
+function wireToolId(id: string, used: Set<string>): string {
+  const base = id.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, MAX_TOOL_ID_LENGTH) || 'tool'
+  let candidate = base
+  for (let suffix = 1; used.has(candidate); suffix += 1) {
+    const tail = `_${suffix}`
+    candidate = `${base.slice(0, MAX_TOOL_ID_LENGTH - tail.length)}${tail}`
+  }
+  used.add(candidate)
+  return candidate
+}
+
+/**
+ * Pair every tool call with a result in the user turn that follows it, as the
+ * Messages protocol requires, repairing history another provider produced or
+ * an interruption left incomplete instead of refusing the request. Ids are
+ * rewritten by {@link wireToolId}; a call without a result gets an error
+ * result saying none was recorded; a result without a call becomes ordinary
+ * user content; results move to the start of their user turn.
+ * @param messages - wire conversation, rewritten in place.
+ */
+function pairToolHistory(messages: WireMessage[]): void {
+  const used = new Set<string>()
+  // Calls awaiting a result, in call order; a repeated history id pairs with its earliest unanswered call.
+  let pending: Array<{ history: string; wire: string }> = []
+  for (const [index, message] of messages.entries()) {
+    if (message.role === 'assistant') {
+      pending = []
+      for (const block of message.content) {
+        if (block.type !== 'tool_use') continue
+        const wire = wireToolId(block.id, used)
+        pending.push({ history: block.id, wire })
+        block.id = wire
+      }
+      // A user turn is required after calls; insert one when the next turn is not a user turn.
+      if (pending.length > 0 && messages[index + 1]?.role !== 'user') {
+        messages.splice(index + 1, 0, { role: 'user', content: [] })
+      }
+    } else if (message.role === 'user') {
+      const results: WireBlock[] = []
+      const rest: WireBlock[] = []
+      for (const block of message.content) {
+        if (block.type !== 'tool_result') {
+          rest.push(block)
+          continue
+        }
+        const call = pending.findIndex(entry => entry.history === block.tool_use_id)
+        if (call === -1) {
+          rest.push({ type: 'text', text: ORPHAN_RESULT_TEXT }, ...block.content)
+          continue
+        }
+        // oxlint-disable-next-line typescript/no-non-null-assertion -- findIndex returned an existing index
+        results.push({ ...block, tool_use_id: pending.splice(call, 1)[0]!.wire })
+      }
+      const missing = pending.map((entry): WireBlock => ({
+        type: 'tool_result', tool_use_id: entry.wire, content: [{ type: 'text', text: MISSING_RESULT_TEXT }], is_error: true,
+      }))
+      message.content = [...results, ...missing, ...rest]
+      pending = []
+    }
+  }
+}
+
 /** Serialize one complete request using already prepared image bytes.
  * User and tool-result content omits reasoning and tool-call blocks.
  * Empty assistant text blocks and empty user/assistant messages are skipped;
- * empty tool results retain their call ids.
+ * empty tool results retain their call ids. Unsigned reasoning is sent only as
+ * readable text; tool history is repaired by `pairToolHistory`.
  * Routes declaring `reasoningHistory: 'current-turn'` omit thinking before the current turn.
  * Developer messages, already projected for this route by `LlmRuntime`, become
  * system-role updates after the preceding user turn, with tool changes as
@@ -144,22 +232,7 @@ export function serialize(
   }
   flushSystemUpdates()
   if (model?.reasoningHistory === 'current-turn') omitEarlierThinking(messages)
-  let pending = new Set<string>()
-  for (const message of messages) {
-    if (message.role === 'assistant') {
-      const calls = message.content.filter(block => block.type === 'tool_use')
-      pending = new Set(calls.map(block => block.id))
-      if (pending.size !== calls.length) throw new LlmError('DeepSeek Messages duplicate tool call id', 'INVALID_REQUEST')
-    } else if (message.role === 'user') {
-      const results = message.content.filter(block => block.type === 'tool_result')
-      for (const result of results) {
-        if (!pending.delete(result.tool_use_id)) throw new LlmError('DeepSeek Messages tool result has no matching call', 'INVALID_REQUEST')
-      }
-      if (pending.size > 0) throw new LlmError('DeepSeek Messages tool calls need immediate results', 'INVALID_REQUEST')
-      message.content = [...results, ...message.content.filter(block => block.type !== 'tool_result')]
-    }
-  }
-  if (pending.size > 0) throw new LlmError('DeepSeek Messages history ends with unresolved tools', 'INVALID_REQUEST')
+  pairToolHistory(messages)
   const effort = options.reasoningEffort ?? (connection.defaults.reasoningEffort ?? (connection.defaults.thinking === 'disabled' ? 'off' : 'high'))
   if (!['off', 'low', 'high', 'max'].includes(effort) || (connection.defaults.thinking === 'disabled' && effort !== 'off')) {
     throw new LlmError(`DeepSeek Messages does not support reasoning effort ${effort}`, 'UNSUPPORTED_REASONING_EFFORT')

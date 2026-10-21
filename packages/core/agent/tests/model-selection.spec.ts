@@ -121,6 +121,30 @@ describe('installModelSelection()', () => {
     await ctx.fiber.dispose()
   })
 
+  it('reports the assembled route, or the pending one when asked, and delegates without a selection', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    const selection: ModelSelectionRef = { current: undefined, assembled: undefined }
+    const dispose = installModelSelection(ctx, selection)
+    const agent = createAgent()
+    const route = (pending: boolean) => agentEvents(ctx, agent).waterfall(
+      'agent/model-selection', { pending }, () => Promise.resolve({ provider: 'header', model: 'header' }),
+    )
+
+    await expect(route(false)).resolves.toEqual({ provider: 'header', model: 'header' })
+    selection.current = { provider: 'alpha', model: 'a1', reasoningEffort: ReasoningEffortId('high') }
+    // Before any assembly, the pending selection is the route either way.
+    await expect(route(false)).resolves.toEqual({ provider: 'alpha', model: 'a1' })
+    await ctx.systemPrompt.assemble()
+    selection.current = { provider: 'beta', model: 'b1' }
+    await expect(route(false)).resolves.toEqual({ provider: 'alpha', model: 'a1' })
+    await expect(route(true)).resolves.toEqual({ provider: 'beta', model: 'b1' })
+
+    dispose()
+    await expect(route(true)).resolves.toEqual({ provider: 'header', model: 'header' })
+    await ctx.fiber.dispose()
+  })
+
   it('announces same-provider and cross-provider route changes from the assembled selection', async () => {
     const { agent, ctx, dispose, selection } = await switchHarness(
       { provider: 'alpha', model: 'a1' },
